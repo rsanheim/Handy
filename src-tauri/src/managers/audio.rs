@@ -8,7 +8,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+#[cfg(test)]
+mod tests {
+    use super::STREAM_IDLE_TIMEOUT;
+
+    #[test]
+    fn stream_idle_timeout_matches_local_keep_warm_experiment() {
+        assert_eq!(STREAM_IDLE_TIMEOUT.as_secs(), 10 * 60);
+    }
+}
 
 fn set_mute(mute: bool) {
     // Expected behavior:
