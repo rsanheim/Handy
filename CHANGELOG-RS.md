@@ -6,6 +6,24 @@ This file tracks fork-local versions, experiments, and release-candidate builds 
 they can be compared against upstream Handy releases later. The upstream project
 changelog remains the source of truth for official releases.
 
+## 0.8.3-rsanheim-rc2 - 2026-04-30
+
+Base: `0.8.3-rsanheim-rc1`.
+
+### Fixes
+
+- Avoid panicking when a tray icon resource cannot be resolved or loaded while
+  changing recording state.
+- Preserve the transcription coordinator thread when tray icon resources are
+  missing, such as after accidentally running from and then deleting a temporary
+  worktree app bundle.
+
+### Notes
+
+- Root cause observed locally: Handy was still running from
+  `/private/tmp/Handy-lazy-stream-10min/.../Handy.app` after that worktree had
+  been removed.
+
 ## 0.8.3-rsanheim-rc1 - 2026-04-30
 
 Base: upstream `v0.8.3` plus `a385371` (`refactor(nix): rely on cargo-tauri.hook standard phases`).

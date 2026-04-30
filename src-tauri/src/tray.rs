@@ -4,6 +4,7 @@ use crate::managers::transcription::TranscriptionManager;
 use crate::settings;
 use crate::tray_i18n::get_tray_translations;
 use log::{error, info, warn};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -68,17 +69,42 @@ pub fn change_tray_icon(app: &AppHandle, icon: TrayIconState) {
 
     let icon_path = get_icon_path(theme, icon.clone());
 
-    let _ = tray.set_icon(Some(
-        Image::from_path(
-            app.path()
-                .resolve(icon_path, tauri::path::BaseDirectory::Resource)
-                .expect("failed to resolve"),
-        )
-        .expect("failed to set icon"),
-    ));
+    match load_tray_icon(
+        app.path()
+            .resolve(icon_path, tauri::path::BaseDirectory::Resource),
+        icon_path,
+    ) {
+        Ok(image) => {
+            if let Err(err) = tray.set_icon(Some(image)) {
+                error!("Failed to set tray icon '{}': {}", icon_path, err);
+            }
+        }
+        Err(err) => {
+            error!("{}", err);
+        }
+    }
 
     // Update menu based on state
     update_tray_menu(app, &icon, None);
+}
+
+fn load_tray_icon(
+    resolved_icon_path: tauri::Result<PathBuf>,
+    icon_path: &str,
+) -> Result<Image<'static>, String> {
+    let resolved_icon_path = resolved_icon_path
+        .map_err(|err| format!("Failed to resolve tray icon '{}': {}", icon_path, err))?;
+
+    Image::from_path(&resolved_icon_path)
+        .map(|image| image.to_owned())
+        .map_err(|err| {
+            format!(
+                "Failed to load tray icon '{}' from '{}': {}",
+                icon_path,
+                resolved_icon_path.display(),
+                err
+            )
+        })
 }
 
 pub fn tray_tooltip() -> String {
@@ -272,7 +298,7 @@ pub fn copy_last_transcript(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::last_transcript_text;
+    use super::{last_transcript_text, load_tray_icon};
     use crate::managers::history::HistoryEntry;
 
     fn build_entry(transcription: &str, post_processed: Option<&str>) -> HistoryEntry {
@@ -299,5 +325,16 @@ mod tests {
     fn falls_back_to_raw_transcription() {
         let entry = build_entry("raw", None);
         assert_eq!(last_transcript_text(&entry), "raw");
+    }
+
+    #[test]
+    fn tray_icon_resolution_failure_is_reported_instead_of_panicking() {
+        let result = load_tray_icon(
+            Err(tauri::Error::UnknownPath),
+            "resources/tray_recording.png",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("resources/tray_recording.png"));
     }
 }
