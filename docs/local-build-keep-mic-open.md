@@ -3,6 +3,9 @@
 This branch changes the experimental **Keep Mic Open Between Transcriptions**
 setting from 30 seconds to 10 minutes.
 
+It also uses the prerelease version `0.8.3-rsanheim-rc1` so local artifacts are
+easier to distinguish from the published upstream `0.8.3` release.
+
 ## What Changed
 
 The backend idle timeout in `src-tauri/src/managers/audio.rs` is hard-coded to
@@ -90,6 +93,12 @@ The bundle will be written under:
 
 ```text
 src-tauri/target/release/bundle/macos/
+```
+
+The DMG name includes the prerelease suffix:
+
+```text
+src-tauri/target/release/bundle/dmg/Handy_0.8.3-rsanheim-rc1_aarch64.dmg
 ```
 
 This does not overwrite the installed release in `/Applications` unless you copy
