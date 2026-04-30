@@ -18,9 +18,10 @@ use crate::audio_toolkit::{
     vad::{self, VadFrame},
     VoiceActivityDetector,
 };
+use crate::perf_trace::PerfTrace;
 
 enum Cmd {
-    Start,
+    Start { perf_trace: Option<PerfTrace> },
     Stop(mpsc::Sender<Vec<f32>>),
     Shutdown,
 }
@@ -196,8 +197,15 @@ impl AudioRecorder {
     }
 
     pub fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.start_with_trace(None)
+    }
+
+    pub fn start_with_trace(
+        &self,
+        perf_trace: Option<PerfTrace>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(tx) = &self.cmd_tx {
-            tx.send(Cmd::Start)?;
+            tx.send(Cmd::Start { perf_trace })?;
         }
         Ok(())
     }
@@ -351,7 +359,12 @@ pub fn is_no_input_device_error(error_message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_microphone_access_denied, is_no_input_device_error};
+    use super::{is_microphone_access_denied, is_no_input_device_error, AudioRecorder};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
 
     #[test]
     fn detects_access_is_denied() {
@@ -390,6 +403,110 @@ mod tests {
         assert!(!is_no_input_device_error("permission denied"));
         assert!(!is_no_input_device_error("device not found"));
     }
+
+    // ---------------------------------------------------------------
+    // Lifecycle tests exercising AudioRecorder::open / start / stop / close
+    // against the real default input device. They skip gracefully when no
+    // device is available (e.g. headless CI) so the unit suite still passes.
+    // On macOS the first run may prompt for microphone permission.
+    // ---------------------------------------------------------------
+
+    /// Try to open the default input device. Returns `None` and the test
+    /// should early-return when no input device is attached; panics on any
+    /// other error so real regressions still surface.
+    fn open_default_or_skip(recorder: &mut AudioRecorder) -> Option<()> {
+        match recorder.open(None) {
+            Ok(()) => Some(()),
+            Err(err) => {
+                let msg = err.to_string();
+                if is_no_input_device_error(&msg) {
+                    eprintln!("skipping recorder lifecycle test: {msg}");
+                    None
+                } else {
+                    panic!("AudioRecorder::open failed unexpectedly: {msg}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn open_default_device_then_close_is_clean() {
+        let mut recorder = AudioRecorder::new().expect("new should succeed");
+        if open_default_or_skip(&mut recorder).is_none() {
+            return;
+        }
+        recorder.close().expect("close should succeed after open");
+    }
+
+    #[test]
+    fn open_is_idempotent_on_already_open_recorder() {
+        let mut recorder = AudioRecorder::new().expect("new should succeed");
+        if open_default_or_skip(&mut recorder).is_none() {
+            return;
+        }
+        // Second open on an already-open recorder must be a no-op, not an
+        // error and not a second worker thread.
+        recorder
+            .open(None)
+            .expect("second open on an already-open recorder should be a no-op");
+        recorder.close().expect("close should succeed");
+    }
+
+    #[test]
+    fn start_then_stop_returns_captured_samples() {
+        let mut recorder = AudioRecorder::new().expect("new should succeed");
+        if open_default_or_skip(&mut recorder).is_none() {
+            return;
+        }
+        recorder.start().expect("start should succeed");
+        // Give the cpal callback a chance to fire at least once. Any real
+        // device should produce samples within this window; we only assert
+        // the call returns Ok so the test stays stable on silent mics.
+        std::thread::sleep(Duration::from_millis(150));
+        let samples = recorder.stop().expect("stop should return samples");
+        // Sanity: stop returns an owned Vec<f32>. We don't assert length -
+        // VAD may suppress silence, but the call must succeed cleanly.
+        let _: Vec<f32> = samples;
+        recorder.close().expect("close should succeed");
+    }
+
+    #[test]
+    fn close_allows_reopen() {
+        // The on-demand microphone mode relies on repeated open/close
+        // cycles. This test pins that lifecycle so we notice if a refactor
+        // leaks state between sessions.
+        let mut recorder = AudioRecorder::new().expect("new should succeed");
+        if open_default_or_skip(&mut recorder).is_none() {
+            return;
+        }
+        recorder.close().expect("first close should succeed");
+        recorder
+            .open(None)
+            .expect("reopen after close should succeed");
+        recorder.close().expect("second close should succeed");
+    }
+
+    #[test]
+    fn level_callback_fires_while_recording() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_cb = Arc::clone(&hits);
+        let mut recorder = AudioRecorder::new()
+            .expect("new should succeed")
+            .with_level_callback(move |_buckets| {
+                hits_cb.fetch_add(1, Ordering::Relaxed);
+            });
+        if open_default_or_skip(&mut recorder).is_none() {
+            return;
+        }
+        recorder.start().expect("start should succeed");
+        std::thread::sleep(Duration::from_millis(400));
+        let _ = recorder.stop().expect("stop should succeed");
+        recorder.close().expect("close should succeed");
+        assert!(
+            hits.load(Ordering::Relaxed) > 0,
+            "level callback should fire at least once while recording",
+        );
+    }
 }
 
 fn run_consumer(
@@ -408,6 +525,7 @@ fn run_consumer(
 
     let mut processed_samples = Vec::<f32>::new();
     let mut recording = false;
+    let mut first_recording_frame_trace: Option<PerfTrace> = None;
 
     // ---------- spectrum visualisation setup ---------------------------- //
     const BUCKETS: usize = 16;
@@ -461,19 +579,34 @@ fn run_consumer(
 
         // ---------- existing pipeline ------------------------------------ //
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
+            if recording {
+                if let Some(trace) = first_recording_frame_trace.take() {
+                    trace.log_detail(
+                        "audio_recorder_first_resampled_frame",
+                        format_args!("frame_samples={}", frame.len()),
+                    );
+                }
+            }
             handle_frame(frame, recording, &vad, &mut processed_samples)
         });
 
         // non-blocking check for a command
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                Cmd::Start => {
+                Cmd::Start { perf_trace } => {
+                    if let Some(trace) = perf_trace {
+                        trace.log_event("audio_recorder_cmd_start_received");
+                    }
                     stop_flag.store(false, Ordering::Relaxed);
                     processed_samples.clear();
                     recording = true;
+                    first_recording_frame_trace = perf_trace;
                     visualizer.reset();
                     if let Some(v) = &vad {
                         v.lock().unwrap().reset();
+                    }
+                    if let Some(trace) = perf_trace {
+                        trace.log_event("audio_recorder_recording_flag_set");
                     }
                 }
                 Cmd::Stop(reply_tx) => {

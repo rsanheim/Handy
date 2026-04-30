@@ -11,6 +11,7 @@ mod input;
 mod llm_client;
 mod managers;
 mod overlay;
+mod perf_trace;
 pub mod portable;
 mod settings;
 mod shortcut;

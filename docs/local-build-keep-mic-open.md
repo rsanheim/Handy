@@ -6,6 +6,9 @@ setting from 30 seconds to 10 minutes.
 It also uses the prerelease version `0.8.3-rsanheim-rc1` so local artifacts are
 easier to distinguish from the published upstream `0.8.3` release.
 
+The warm lazy-stream path also skips the fixed 100ms startup-tone delay when the
+microphone stream is already open. Cold starts keep the existing delay.
+
 ## What Changed
 
 The backend idle timeout in `src-tauri/src/managers/audio.rs` is hard-coded to
@@ -25,6 +28,10 @@ The setting still has to be enabled in Handy:
 With that setting enabled, Handy keeps the microphone stream open for 10 minutes
 after each recording stops. Starting another recording during that window should
 avoid the cold microphone-open path.
+
+When a later recording starts during the warm window, Handy skips the old fixed
+100ms pause before the startup tone. That change only applies when **Keep Mic
+Open Between Transcriptions** is enabled and the stream is already open.
 
 ## Existing Installed Release
 
@@ -86,8 +93,12 @@ shared. The source checkout is separate; your installed `.app` is not replaced.
 To create a local macOS bundle:
 
 ```bash
-bun run tauri build
+bun run tauri -- build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
+
+The config override disables updater signing artifacts for this local-only build.
+Without it, the app/DMG can build but the final updater signing step may fail if
+`TAURI_SIGNING_PRIVATE_KEY` is not configured.
 
 The bundle will be written under:
 
@@ -126,3 +137,46 @@ You can follow them while testing:
 ```bash
 tail -f ~/Library/Logs/com.pais.handy/handy.log
 ```
+
+## Trace The Startup Hot Path
+
+Hot-path tracing uses the existing Handy log pipeline. It does not add a new
+dependency, and it only creates traces when explicitly enabled, so normal
+release-style logging does not include these events.
+
+To enable tracing for a local app bundle, quit any running Handy instance and
+launch the local build with `HANDY_PERF_TRACE=1`:
+
+```bash
+HANDY_PERF_TRACE=1 script/handy
+```
+
+You can still pass normal Handy arguments through the launcher, for example:
+
+```bash
+HANDY_PERF_TRACE=1 script/handy --debug
+```
+
+`--debug` enables broader app and dependency debug logging. For cleaner timing
+logs, prefer `HANDY_PERF_TRACE=1` without `--debug`.
+
+Then follow the log:
+
+```bash
+tail -f ~/Library/Logs/com.pais.handy/handy.log | grep 'perf.hot_path'
+```
+
+The trace lines include a `trace_id`, event name, and elapsed milliseconds from
+the shortcut or external trigger. For the flow this branch is investigating,
+useful events include:
+
+- `shortcut_event_received`
+- `coordinator_start_dispatch`
+- `try_start_recording_begin`
+- `audio_manager_microphone_stream_already_open`
+- `audio_manager_recorder_start_complete`
+- `startup_feedback_delay_skipped_warm_stream`
+- `audio_feedback_output_stream_open_complete`
+- `audio_recorder_first_resampled_frame`
+
+Launch without `HANDY_PERF_TRACE=1` to disable these hot-path trace events.

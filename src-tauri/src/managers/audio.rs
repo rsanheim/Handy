@@ -1,5 +1,6 @@
 use crate::audio_toolkit::{list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
 use crate::helpers::clamshell;
+use crate::perf_trace::PerfTrace;
 use crate::settings::{get_settings, AppSettings};
 use crate::utils;
 use log::{debug, error, info};
@@ -293,13 +294,26 @@ impl AudioRecordingManager {
     }
 
     pub fn start_microphone_stream(&self) -> Result<(), anyhow::Error> {
+        self.start_microphone_stream_with_trace(None)
+    }
+
+    fn start_microphone_stream_with_trace(
+        &self,
+        perf_trace: Option<PerfTrace>,
+    ) -> Result<(), anyhow::Error> {
         let mut open_flag = self.is_open.lock().unwrap();
         if *open_flag {
             debug!("Microphone stream already active");
+            if let Some(trace) = perf_trace {
+                trace.log_event("audio_manager_microphone_stream_already_open");
+            }
             return Ok(());
         }
 
         let start_time = Instant::now();
+        if let Some(trace) = perf_trace {
+            trace.log_event("audio_manager_microphone_stream_open_begin");
+        }
 
         // Don't mute immediately - caller will handle muting after audio feedback
         let mut did_mute_guard = self.did_mute.lock().unwrap();
@@ -317,17 +331,32 @@ impl AudioRecordingManager {
                 .map(|devices| !devices.is_empty())
                 .unwrap_or(false);
             if !has_any_device {
+                if let Some(trace) = perf_trace {
+                    trace.log_event("audio_manager_no_input_device");
+                }
                 return Err(anyhow::anyhow!("No input device found"));
             }
         }
 
         // Ensure VAD is loaded if it wasn't for whatever reason
+        if let Some(trace) = perf_trace {
+            trace.log_event("audio_manager_preload_vad_begin");
+        }
         self.preload_vad()?;
+        if let Some(trace) = perf_trace {
+            trace.log_event("audio_manager_preload_vad_complete");
+        }
 
         let mut recorder_opt = self.recorder.lock().unwrap();
         if let Some(rec) = recorder_opt.as_mut() {
+            if let Some(trace) = perf_trace {
+                trace.log_event("audio_manager_recorder_open_begin");
+            }
             rec.open(selected_device)
                 .map_err(|e| anyhow::anyhow!("Failed to open recorder: {}", e))?;
+            if let Some(trace) = perf_trace {
+                trace.log_event("audio_manager_recorder_open_complete");
+            }
         }
 
         *open_flag = true;
@@ -340,6 +369,15 @@ impl AudioRecordingManager {
             "Microphone stream initialized in {:?}",
             start_time.elapsed()
         );
+        if let Some(trace) = perf_trace {
+            trace.log_detail(
+                "audio_manager_microphone_stream_open_complete",
+                format_args!(
+                    "duration_ms={:.2}",
+                    start_time.elapsed().as_secs_f64() * 1000.0
+                ),
+            );
+        }
         Ok(())
     }
 
@@ -393,7 +431,12 @@ impl AudioRecordingManager {
 
     /* ---------- recording --------------------------------------------------- */
 
-    pub fn try_start_recording(&self, binding_id: &str) -> Result<(), String> {
+    pub fn try_start_recording(
+        &self,
+        binding_id: &str,
+        perf_trace: Option<PerfTrace>,
+    ) -> Result<(), String> {
+        let start_time = Instant::now();
         let mut state = self.state.lock().unwrap();
 
         if let RecordingState::Idle = *state {
@@ -401,25 +444,60 @@ impl AudioRecordingManager {
             if matches!(*self.mode.lock().unwrap(), MicrophoneMode::OnDemand) {
                 // Cancel any pending lazy close
                 self.close_generation.fetch_add(1, Ordering::SeqCst);
-                if let Err(e) = self.start_microphone_stream() {
+                if let Some(trace) = perf_trace {
+                    trace.log_detail(
+                        "audio_manager_on_demand_stream_prepare",
+                        format_args!("was_open={}", *self.is_open.lock().unwrap()),
+                    );
+                }
+                if let Err(e) = self.start_microphone_stream_with_trace(perf_trace) {
                     let msg = format!("{e}");
                     error!("Failed to open microphone stream: {msg}");
+                    if let Some(trace) = perf_trace {
+                        trace.log_detail(
+                            "audio_manager_microphone_stream_open_error",
+                            format_args!("error={msg}"),
+                        );
+                    }
                     return Err(msg);
                 }
             }
 
             if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
-                if rec.start().is_ok() {
+                if let Some(trace) = perf_trace {
+                    trace.log_event("audio_manager_recorder_start_begin");
+                }
+                if rec.start_with_trace(perf_trace).is_ok() {
+                    if let Some(trace) = perf_trace {
+                        trace.log_event("audio_manager_recorder_start_complete");
+                    }
                     *self.is_recording.lock().unwrap() = true;
                     *state = RecordingState::Recording {
                         binding_id: binding_id.to_string(),
                     };
                     debug!("Recording started for binding {binding_id}");
+                    if let Some(trace) = perf_trace {
+                        trace.log_detail(
+                            "audio_manager_recording_state_set",
+                            format_args!(
+                                "binding_id={binding_id} duration_ms={:.2}",
+                                start_time.elapsed().as_secs_f64() * 1000.0
+                            ),
+                        );
+                    }
                     return Ok(());
+                } else if let Some(trace) = perf_trace {
+                    trace.log_event("audio_manager_recorder_start_error");
                 }
+            }
+            if let Some(trace) = perf_trace {
+                trace.log_event("audio_manager_recorder_unavailable");
             }
             Err("Recorder not available".to_string())
         } else {
+            if let Some(trace) = perf_trace {
+                trace.log_event("audio_manager_already_recording");
+            }
             Err("Already recording".to_string())
         }
     }
@@ -497,6 +575,10 @@ impl AudioRecordingManager {
             *self.state.lock().unwrap(),
             RecordingState::Recording { .. }
         )
+    }
+
+    pub fn is_microphone_stream_open(&self) -> bool {
+        *self.is_open.lock().unwrap()
     }
 
     /// Cancel any ongoing recording without returning audio samples

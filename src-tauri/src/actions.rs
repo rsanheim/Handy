@@ -5,6 +5,7 @@ use crate::audio_toolkit::{is_microphone_access_denied, is_no_input_device_error
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
+use crate::perf_trace::PerfTrace;
 use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
@@ -17,7 +18,7 @@ use log::{debug, error, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
@@ -40,7 +41,13 @@ impl Drop for FinishGuard {
 
 // Shortcut Action Trait
 pub trait ShortcutAction: Send + Sync {
-    fn start(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str);
+    fn start(
+        &self,
+        app: &AppHandle,
+        binding_id: &str,
+        shortcut_str: &str,
+        perf_trace: Option<PerfTrace>,
+    );
     fn stop(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str);
 }
 
@@ -51,6 +58,40 @@ struct TranscribeAction {
 
 /// Field name for structured output JSON schema
 const TRANSCRIPTION_FIELD: &str = "transcription";
+const STARTUP_FEEDBACK_DELAY: Duration = Duration::from_millis(100);
+
+fn startup_feedback_delay(lazy_stream_close: bool, stream_was_open: bool) -> Duration {
+    if lazy_stream_close && stream_was_open {
+        Duration::ZERO
+    } else {
+        STARTUP_FEEDBACK_DELAY
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{startup_feedback_delay, STARTUP_FEEDBACK_DELAY};
+    use std::time::Duration;
+
+    #[test]
+    fn startup_feedback_delay_is_skipped_for_warm_lazy_stream() {
+        assert_eq!(
+            startup_feedback_delay(true, true),
+            Duration::ZERO,
+            "warm lazy stream path should not pay the fixed startup tone delay",
+        );
+    }
+
+    #[test]
+    fn startup_feedback_delay_stays_for_cold_lazy_stream() {
+        assert_eq!(startup_feedback_delay(true, false), STARTUP_FEEDBACK_DELAY);
+    }
+
+    #[test]
+    fn startup_feedback_delay_stays_when_lazy_stream_is_disabled() {
+        assert_eq!(startup_feedback_delay(false, true), STARTUP_FEEDBACK_DELAY);
+    }
+}
 
 /// Strip invisible Unicode characters that some LLMs may insert
 fn strip_invisible_chars(s: &str) -> String {
@@ -387,8 +428,20 @@ pub(crate) async fn process_transcription_output(
 }
 
 impl ShortcutAction for TranscribeAction {
-    fn start(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+    fn start(
+        &self,
+        app: &AppHandle,
+        binding_id: &str,
+        _shortcut_str: &str,
+        perf_trace: Option<PerfTrace>,
+    ) {
         let start_time = Instant::now();
+        if let Some(trace) = perf_trace {
+            trace.log_detail(
+                "transcribe_action_start_enter",
+                format_args!("binding_id={binding_id} post_process={}", self.post_process),
+            );
+        }
         debug!("TranscribeAction::start called for binding: {}", binding_id);
 
         // Load model in the background
@@ -397,6 +450,9 @@ impl ShortcutAction for TranscribeAction {
 
         // Load ASR model and VAD model in parallel
         tm.initiate_model_load();
+        if let Some(trace) = perf_trace {
+            trace.log_event("model_load_initiated");
+        }
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -411,6 +467,18 @@ impl ShortcutAction for TranscribeAction {
         // Get the microphone mode to determine audio feedback timing
         let settings = get_settings(app);
         let is_always_on = settings.always_on_microphone;
+        if let Some(trace) = perf_trace {
+            trace.log_detail(
+                "recording_settings_loaded",
+                format_args!(
+                    "always_on={} lazy_stream_close={} audio_feedback={} mute_while_recording={}",
+                    is_always_on,
+                    settings.lazy_stream_close,
+                    settings.audio_feedback,
+                    settings.mute_while_recording
+                ),
+            );
+        }
         debug!("Microphone mode - always_on: {}", is_always_on);
 
         let mut recording_error: Option<String> = None;
@@ -422,36 +490,92 @@ impl ShortcutAction for TranscribeAction {
             // The blocking helper exits immediately if audio feedback is disabled,
             // so we can always reuse this thread to ensure mute happens right after playback.
             std::thread::spawn(move || {
-                play_feedback_sound_blocking(&app_clone, SoundType::Start);
+                if let Some(trace) = perf_trace {
+                    trace.log_event("startup_feedback_thread_begin");
+                }
+                play_feedback_sound_blocking(&app_clone, SoundType::Start, perf_trace);
                 rm_clone.apply_mute();
+                if let Some(trace) = perf_trace {
+                    trace.log_event("startup_feedback_thread_complete");
+                }
             });
 
-            if let Err(e) = rm.try_start_recording(&binding_id) {
+            if let Some(trace) = perf_trace {
+                trace.log_event("try_start_recording_begin");
+            }
+            if let Err(e) = rm.try_start_recording(&binding_id, perf_trace) {
                 debug!("Recording failed: {}", e);
+                if let Some(trace) = perf_trace {
+                    trace.log_detail("try_start_recording_error", format_args!("error={e}"));
+                }
                 recording_error = Some(e);
+            } else if let Some(trace) = perf_trace {
+                trace.log_event("try_start_recording_complete");
             }
         } else {
             // On-demand mode: Start recording first, then play audio feedback, then apply mute
             // This allows the microphone to be activated before playing the sound
             debug!("On-demand mode: Starting recording first, then audio feedback");
             let recording_start_time = Instant::now();
-            match rm.try_start_recording(&binding_id) {
+            let stream_was_open = rm.is_microphone_stream_open();
+            if let Some(trace) = perf_trace {
+                trace.log_detail(
+                    "try_start_recording_begin",
+                    format_args!("stream_was_open={stream_was_open}"),
+                );
+            }
+            match rm.try_start_recording(&binding_id, perf_trace) {
                 Ok(()) => {
                     debug!("Recording started in {:?}", recording_start_time.elapsed());
-                    // Small delay to ensure microphone stream is active
+                    if let Some(trace) = perf_trace {
+                        trace.log_detail(
+                            "try_start_recording_complete",
+                            format_args!(
+                                "duration_ms={:.2}",
+                                recording_start_time.elapsed().as_secs_f64() * 1000.0
+                            ),
+                        );
+                    }
+                    // Cold on-demand starts keep a short guard delay. If the
+                    // lazy-close experiment already kept the stream warm, avoid
+                    // paying that fixed cost before the startup tone.
+                    let feedback_delay =
+                        startup_feedback_delay(settings.lazy_stream_close, stream_was_open);
                     let app_clone = app.clone();
                     let rm_clone = Arc::clone(&rm);
                     std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        if let Some(trace) = perf_trace {
+                            trace.log_event("startup_feedback_thread_begin");
+                        }
+                        if let Some(trace) = perf_trace {
+                            trace.log_detail(
+                                "startup_feedback_delay_begin",
+                                format_args!("duration_ms={}", feedback_delay.as_millis()),
+                            );
+                        }
+                        if !feedback_delay.is_zero() {
+                            std::thread::sleep(feedback_delay);
+                        } else if let Some(trace) = perf_trace {
+                            trace.log_event("startup_feedback_delay_skipped_warm_stream");
+                        }
+                        if let Some(trace) = perf_trace {
+                            trace.log_event("startup_feedback_delay_complete");
+                        }
                         debug!("Handling delayed audio feedback/mute sequence");
                         // Helper handles disabled audio feedback by returning early, so we reuse it
                         // to keep mute sequencing consistent in every mode.
-                        play_feedback_sound_blocking(&app_clone, SoundType::Start);
+                        play_feedback_sound_blocking(&app_clone, SoundType::Start, perf_trace);
                         rm_clone.apply_mute();
+                        if let Some(trace) = perf_trace {
+                            trace.log_event("startup_feedback_thread_complete");
+                        }
                     });
                 }
                 Err(e) => {
                     debug!("Failed to start recording: {}", e);
+                    if let Some(trace) = perf_trace {
+                        trace.log_detail("try_start_recording_error", format_args!("error={e}"));
+                    }
                     recording_error = Some(e);
                 }
             }
@@ -487,6 +611,15 @@ impl ShortcutAction for TranscribeAction {
             "TranscribeAction::start completed in {:?}",
             start_time.elapsed()
         );
+        if let Some(trace) = perf_trace {
+            trace.log_detail(
+                "transcribe_action_start_return",
+                format_args!(
+                    "duration_ms={:.2}",
+                    start_time.elapsed().as_secs_f64() * 1000.0
+                ),
+            );
+        }
     }
 
     fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
@@ -664,7 +797,13 @@ impl ShortcutAction for TranscribeAction {
 struct CancelAction;
 
 impl ShortcutAction for CancelAction {
-    fn start(&self, app: &AppHandle, _binding_id: &str, _shortcut_str: &str) {
+    fn start(
+        &self,
+        app: &AppHandle,
+        _binding_id: &str,
+        _shortcut_str: &str,
+        _perf_trace: Option<PerfTrace>,
+    ) {
         utils::cancel_current_operation(app);
     }
 
@@ -677,7 +816,13 @@ impl ShortcutAction for CancelAction {
 struct TestAction;
 
 impl ShortcutAction for TestAction {
-    fn start(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str) {
+    fn start(
+        &self,
+        app: &AppHandle,
+        binding_id: &str,
+        shortcut_str: &str,
+        _perf_trace: Option<PerfTrace>,
+    ) {
         log::info!(
             "Shortcut ID '{}': Started - {} (App: {})", // Changed "Pressed" to "Started" for consistency
             binding_id,

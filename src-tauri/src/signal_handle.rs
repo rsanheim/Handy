@@ -1,4 +1,4 @@
-use crate::TranscriptionCoordinator;
+use crate::{perf_trace::PerfTrace, TranscriptionCoordinator};
 #[cfg(unix)]
 use log::debug;
 use log::warn;
@@ -15,7 +15,14 @@ use std::thread;
 /// Used by signal handlers, CLI flags, and any other external trigger.
 pub fn send_transcription_input(app: &AppHandle, binding_id: &str, source: &str) {
     if let Some(c) = app.try_state::<TranscriptionCoordinator>() {
-        c.send_input(binding_id, source, true, false);
+        let perf_trace = PerfTrace::new_if_enabled();
+        if let Some(trace) = perf_trace {
+            trace.log_detail(
+                "external_transcription_input_received",
+                format_args!("binding_id={binding_id} source={source}"),
+            );
+        }
+        c.send_input(binding_id, source, true, false, perf_trace);
     } else {
         warn!("TranscriptionCoordinator not initialized");
     }

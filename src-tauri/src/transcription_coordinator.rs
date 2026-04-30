@@ -1,5 +1,6 @@
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
+use crate::perf_trace::PerfTrace;
 use log::{debug, error, warn};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
@@ -16,6 +17,7 @@ enum Command {
         hotkey_string: String,
         is_pressed: bool,
         push_to_talk: bool,
+        perf_trace: Option<PerfTrace>,
     },
     Cancel {
         recording_was_active: bool,
@@ -57,13 +59,25 @@ impl TranscriptionCoordinator {
                             hotkey_string,
                             is_pressed,
                             push_to_talk,
+                            perf_trace,
                         } => {
+                            if let Some(trace) = perf_trace {
+                                trace.log_detail(
+                                    "coordinator_input_received",
+                                    format_args!(
+                                        "binding_id={binding_id} pressed={is_pressed} push_to_talk={push_to_talk}"
+                                    ),
+                                );
+                            }
                             // Debounce rapid-fire press events (key repeat / double-tap).
                             // Releases always pass through for push-to-talk.
                             if is_pressed {
                                 let now = Instant::now();
                                 if last_press.map_or(false, |t| now.duration_since(t) < DEBOUNCE) {
                                     debug!("Debounced press for '{binding_id}'");
+                                    if let Some(trace) = perf_trace {
+                                        trace.log_event("coordinator_press_debounced");
+                                    }
                                     continue;
                                 }
                                 last_press = Some(now);
@@ -71,7 +85,13 @@ impl TranscriptionCoordinator {
 
                             if push_to_talk {
                                 if is_pressed && matches!(stage, Stage::Idle) {
-                                    start(&app, &mut stage, &binding_id, &hotkey_string);
+                                    start(
+                                        &app,
+                                        &mut stage,
+                                        &binding_id,
+                                        &hotkey_string,
+                                        perf_trace,
+                                    );
                                 } else if !is_pressed
                                     && matches!(&stage, Stage::Recording(id) if id == &binding_id)
                                 {
@@ -80,7 +100,13 @@ impl TranscriptionCoordinator {
                             } else if is_pressed {
                                 match &stage {
                                     Stage::Idle => {
-                                        start(&app, &mut stage, &binding_id, &hotkey_string);
+                                        start(
+                                            &app,
+                                            &mut stage,
+                                            &binding_id,
+                                            &hotkey_string,
+                                            perf_trace,
+                                        );
                                     }
                                     Stage::Recording(id) if id == &binding_id => {
                                         stop(&app, &mut stage, &binding_id, &hotkey_string);
@@ -124,6 +150,7 @@ impl TranscriptionCoordinator {
         hotkey_string: &str,
         is_pressed: bool,
         push_to_talk: bool,
+        perf_trace: Option<PerfTrace>,
     ) {
         if self
             .tx
@@ -132,6 +159,7 @@ impl TranscriptionCoordinator {
                 hotkey_string: hotkey_string.to_string(),
                 is_pressed,
                 push_to_talk,
+                perf_trace,
             })
             .is_err()
         {
@@ -158,19 +186,34 @@ impl TranscriptionCoordinator {
     }
 }
 
-fn start(app: &AppHandle, stage: &mut Stage, binding_id: &str, hotkey_string: &str) {
+fn start(
+    app: &AppHandle,
+    stage: &mut Stage,
+    binding_id: &str,
+    hotkey_string: &str,
+    perf_trace: Option<PerfTrace>,
+) {
     let Some(action) = ACTION_MAP.get(binding_id) else {
         warn!("No action in ACTION_MAP for '{binding_id}'");
         return;
     };
-    action.start(app, binding_id, hotkey_string);
+    if let Some(trace) = perf_trace {
+        trace.log_event("coordinator_start_dispatch");
+    }
+    action.start(app, binding_id, hotkey_string, perf_trace);
     if app
         .try_state::<Arc<AudioRecordingManager>>()
         .map_or(false, |a| a.is_recording())
     {
         *stage = Stage::Recording(binding_id.to_string());
+        if let Some(trace) = perf_trace {
+            trace.log_event("coordinator_stage_recording");
+        }
     } else {
         debug!("Start for '{binding_id}' did not begin recording; staying idle");
+        if let Some(trace) = perf_trace {
+            trace.log_event("coordinator_start_left_idle");
+        }
     }
 }
 
