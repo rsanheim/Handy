@@ -1,5 +1,8 @@
 # Local Build: 10-Minute Keep-Mic-Open Experiment
 
+This is a fork-only note for `rsanheim/Handy`. It documents local development
+workflow and should not be treated as upstream Handy documentation.
+
 This branch changes the experimental **Keep Mic Open Between Transcriptions**
 setting from 30 seconds to 10 minutes.
 
@@ -90,15 +93,29 @@ shared. The source checkout is separate; your installed `.app` is not replaced.
 
 ## Build a Local App Bundle
 
-To create a local macOS bundle:
+To create a local macOS bundle for this fork, use the local signing helper:
 
 ```bash
-bun run tauri -- build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
+script/local-signing setup
+script/local-signing trust
+script/local-signing build
+script/local-signing verify
 ```
 
-The config override disables updater signing artifacts for this local-only build.
-Without it, the app/DMG can build but the final updater signing step may fail if
-`TAURI_SIGNING_PRIVATE_KEY` is not configured.
+`script/local-signing setup` creates a self-signed code-signing identity named
+`Handy Local Code Signing` if it does not already exist. `trust` marks that
+identity as valid for code signing; run it from an interactive terminal because
+macOS may prompt for permission. `build` signs the app bundle with that stable
+identity and disables updater artifacts for this local-only build.
+
+This is not Developer ID signing and it does not notarize the app. It is only
+for repeatable local builds of this fork without a paid Apple developer account.
+
+You can inspect the helper's command list and environment overrides with:
+
+```bash
+script/local-signing help
+```
 
 The bundle will be written under:
 
@@ -106,7 +123,11 @@ The bundle will be written under:
 src-tauri/target/release/bundle/macos/
 ```
 
-The DMG name includes the prerelease suffix:
+The local signing helper builds the `.app` bundle only. If you need a DMG, build
+one separately after the app bundle is working.
+
+When this fork's prerelease packaging builds a DMG, the DMG name includes the
+prerelease suffix:
 
 ```text
 src-tauri/target/release/bundle/dmg/Handy_0.8.3-rsanheim-rc1_aarch64.dmg
@@ -116,6 +137,26 @@ This does not overwrite the installed release in `/Applications` unless you copy
 the locally built app there yourself. If you launch the local bundle while the
 installed release is running, the single-instance behavior still applies, so quit
 the release first.
+
+## Accessibility Permissions For Local Builds
+
+The released Handy app and this fork currently use the same macOS application
+identifier, `com.pais.handy`. macOS Accessibility permissions are tied to that
+identifier and the app's code signature. A stable local signing identity keeps
+the fork's code signature consistent across rebuilds, so macOS should not ask
+for Accessibility permission again after every local build.
+
+If Accessibility was previously granted to the released app or an ad-hoc-signed
+local build, reset the permission once before granting it to the signed local
+fork:
+
+```bash
+tccutil reset Accessibility com.pais.handy
+```
+
+Then launch the local bundle and grant Accessibility permission when macOS asks.
+Switching back to the released app may require the same reset-and-grant flow
+because both apps share the same identifier.
 
 ## Verify the Experiment
 
