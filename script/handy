@@ -23,7 +23,7 @@ Hot-path trace output:
   tail -f ~/Library/Logs/com.pais.handy/handy.log | grep 'perf.hot_path'
 
 Build first if the local app is missing:
-  bun run tauri -- build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+  script/local-signing build
 
 Options handled by this launcher:
   -h, --help   Show this help.
@@ -54,6 +54,6 @@ Expected one of:
   $FALLBACK_BIN
 
 Build it with:
-  bun run tauri -- build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+  script/local-signing build
 EOF
 exit 1
