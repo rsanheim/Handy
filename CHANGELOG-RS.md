@@ -6,7 +6,9 @@ This file tracks fork-local versions, experiments, and release-candidate builds 
 they can be compared against upstream Handy releases later. The upstream project
 changelog remains the source of truth for official releases.
 
-## Unreleased - Local Signing Helper
+## 0.8.3-rsanheim-rc3 - 2026-07-14
+
+Base: `0.8.3-rsanheim-rc2`.
 
 ### Fork-Local Changes
 

@@ -6,7 +6,7 @@ workflow and should not be treated as upstream Handy documentation.
 This branch changes the experimental **Keep Mic Open Between Transcriptions**
 setting from 30 seconds to 10 minutes.
 
-It also uses the prerelease version `0.8.3-rsanheim-rc1` so local artifacts are
+It also uses the prerelease version `0.8.3-rsanheim-rc3` so local artifacts are
 easier to distinguish from the published upstream `0.8.3` release.
 
 The warm lazy-stream path also skips the fixed 100ms startup-tone delay when the

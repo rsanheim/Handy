@@ -1,7 +1,7 @@
 {
   "name": "handy-app",
   "private": true,
-  "version": "0.8.3-rsanheim-rc2",
+  "version": "0.8.3-rsanheim-rc3",
   "type": "module",
   "scripts": {
     "dev": "vite",
