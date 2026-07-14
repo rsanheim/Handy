@@ -18,6 +18,8 @@ changelog remains the source of truth for official releases.
   the released `com.pais.handy` app.
 - Refuse local builds and launches that accidentally reuse the upstream bundle
   identifier.
+- Refuse to launch local bundles that are ad-hoc signed, have an invalid
+  signature, or do not use the expected stable local signing identity.
 - Update `script/handy` to point missing local builds at
   `script/local-signing all` instead of ad-hoc Tauri build commands.
 - Document the local signing and Accessibility/TCC reset workflow in

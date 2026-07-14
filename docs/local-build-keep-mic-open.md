@@ -144,6 +144,11 @@ Grant Accessibility to `Handy Local` when macOS first asks. Its stable local
 signing identity keeps that grant valid across rebuilds without displacing the
 released app's grant.
 
+`script/handy` refuses to launch a bundle with the upstream identifier, an
+ad-hoc signature, an invalid signature, or a signing identity other than
+`Handy Local Code Signing`. Rebuild with `script/local-signing all` if that
+check fails.
+
 If the local grant needs to be reset, reset only the local identifier:
 
 ```bash
