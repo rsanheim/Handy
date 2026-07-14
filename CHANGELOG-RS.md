@@ -11,9 +11,10 @@ changelog remains the source of truth for official releases.
 ### Fork-Local Changes
 
 - Add `script/local-signing` for repeatable local macOS app bundle signing with
-  a stable self-signed code-signing identity.
+  a stable self-signed code-signing identity. `script/local-signing all` runs
+  setup, trust, build, and verification as one interactive workflow.
 - Update `script/handy` to point missing local builds at
-  `script/local-signing build` instead of ad-hoc Tauri build commands.
+  `script/local-signing all` instead of ad-hoc Tauri build commands.
 - Document the local signing and Accessibility/TCC reset workflow in
   `docs/local-build-keep-mic-open.md`.
 

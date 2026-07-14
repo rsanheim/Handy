@@ -31,6 +31,7 @@ Usage: script/local-signing <command>
 Create and use a stable local macOS code-signing identity for this Handy fork.
 
 Commands:
+  all                  Set up signing, build the app, and verify the result.
   setup                Create the local signing identity if it is missing.
   trust                Trust the local identity for code signing.
   build                Ensure the identity exists, then build a signed .app bundle.
@@ -39,10 +40,7 @@ Commands:
   help                 Show this help.
 
 Typical flow:
-  script/local-signing setup
-  script/local-signing trust
-  script/local-signing build
-  script/local-signing verify
+  script/local-signing all
 
 Environment:
   HANDY_LOCAL_SIGNING_IDENTITY   Signing identity name.
@@ -55,9 +53,8 @@ Environment:
 Notes:
   - This is for local development only. It is not Developer ID signing and it
     does not notarize the app.
-  - After creating a new self-signed identity, macOS must trust it for code
-    signing before Tauri can use it. Run this script's trust command from an
-    interactive terminal, or set trust manually in Keychain Access.
+  - The all and trust commands may prompt for permission to update certificate
+    trust. Run them from an interactive terminal.
   - If HANDY_LOCAL_SIGNING_KEYCHAIN points at a non-default keychain, that
     keychain must also be on your user keychain search list for Tauri builds.
   - The first signed build may prompt for permission to let codesign use the
@@ -220,6 +217,8 @@ EOF
 }
 
 setup_identity() {
+  local show_trust_instructions="${1:-true}"
+
   require_keychain_access
   require_command openssl
   validate_days
@@ -233,7 +232,9 @@ setup_identity() {
   if identity_record_exists; then
     printf 'Found signing identity: %s\n' "$IDENTITY"
     printf 'Keychain: %s\n' "$KEYCHAIN"
-    print_trust_instructions
+    if [[ "$show_trust_instructions" == "true" ]]; then
+      print_trust_instructions
+    fi
     return
   fi
 
@@ -246,14 +247,16 @@ setup_identity() {
   fi
 
   printf 'Created signing identity: %s\n' "$IDENTITY"
-  print_trust_instructions
+  if [[ "$show_trust_instructions" == "true" ]]; then
+    print_trust_instructions
+  fi
 }
 
 trust_identity() {
   require_keychain_access
 
   if ! identity_record_exists; then
-    setup_identity
+    setup_identity false
   fi
 
   TEMP_DIR="$(mktemp -d)"
@@ -291,8 +294,7 @@ require_valid_identity() {
   exit 1
 }
 
-build_app() {
-  setup_identity
+build_signed_app() {
   require_valid_identity
   require_command bun
 
@@ -306,6 +308,11 @@ build_app() {
 
   cd "$ROOT_DIR"
   bun run tauri -- build --bundles app --config "$config"
+}
+
+build_app() {
+  setup_identity
+  build_signed_app
 }
 
 verify_app() {
@@ -340,6 +347,17 @@ verify_app() {
   printf 'Verified Handy.app is signed with: %s\n' "$IDENTITY"
 }
 
+run_all() {
+  setup_identity false
+
+  if ! valid_identity_exists; then
+    trust_identity
+  fi
+
+  build_signed_app
+  verify_app
+}
+
 self_test() {
   local expected_identity="Handy Test Signing Identity"
   local original_identity="$IDENTITY"
@@ -370,8 +388,7 @@ self_test() {
 
   help_output="$(usage)"
   assert_contains "$help_output" 'Typical flow:'
-  assert_contains "$help_output" 'script/local-signing setup'
-  assert_contains "$help_output" 'script/local-signing verify'
+  assert_contains "$help_output" 'script/local-signing all'
 
   IDENTITY="$original_identity"
 
@@ -380,6 +397,9 @@ self_test() {
 
 command="${1:-help}"
 case "$command" in
+  all)
+    run_all
+    ;;
   setup)
     setup_identity
     if valid_identity_exists; then

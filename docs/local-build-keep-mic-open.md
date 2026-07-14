@@ -96,17 +96,17 @@ shared. The source checkout is separate; your installed `.app` is not replaced.
 To create a local macOS bundle for this fork, use the local signing helper:
 
 ```bash
-script/local-signing setup
-script/local-signing trust
-script/local-signing build
-script/local-signing verify
+script/local-signing all
 ```
 
-`script/local-signing setup` creates a self-signed code-signing identity named
-`Handy Local Code Signing` if it does not already exist. `trust` marks that
-identity as valid for code signing; run it from an interactive terminal because
-macOS may prompt for permission. `build` signs the app bundle with that stable
-identity and disables updater artifacts for this local-only build.
+`script/local-signing all` creates a self-signed code-signing identity named
+`Handy Local Code Signing` if it does not already exist, trusts it when needed,
+builds the signed app bundle, and verifies the resulting signature. Run it from
+an interactive terminal because macOS may prompt for permission to update
+certificate trust. The build disables updater artifacts for this local-only app.
+
+The individual `setup`, `trust`, `build`, and `verify` commands remain available
+for troubleshooting or running one step at a time.
 
 This is not Developer ID signing and it does not notarize the app. It is only
 for repeatable local builds of this fork without a paid Apple developer account.
