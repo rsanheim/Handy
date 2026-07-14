@@ -2,16 +2,18 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$ROOT_DIR/src-tauri/target/release/bundle/macos/Handy.app"
+UPSTREAM_BUNDLE_ID="com.pais.handy"
+BUNDLE_ID="${HANDY_LOCAL_BUNDLE_ID:-com.rsanheim.handy}"
+PRODUCT_NAME="${HANDY_LOCAL_PRODUCT_NAME:-Handy Local}"
+APP_DIR="$ROOT_DIR/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app"
 APP_BIN_LOWER="$APP_DIR/Contents/MacOS/handy"
-APP_BIN_UPPER="$APP_DIR/Contents/MacOS/Handy"
-FALLBACK_BIN="$ROOT_DIR/src-tauri/target/release/handy"
+APP_BIN_PRODUCT="$APP_DIR/Contents/MacOS/$PRODUCT_NAME"
 
 usage() {
   cat <<EOF
 Usage: script/handy [ARGS...]
 
-Launch the locally built Handy app from this checkout and forward all arguments.
+Launch the locally built $PRODUCT_NAME app and forward all arguments.
 
 Examples:
   script/handy
@@ -20,7 +22,7 @@ Examples:
   HANDY_PERF_TRACE=1 script/handy
 
 Hot-path trace output:
-  tail -f ~/Library/Logs/com.pais.handy/handy.log | grep 'perf.hot_path'
+  tail -f ~/Library/Logs/$BUNDLE_ID/handy.log | grep 'perf.hot_path'
 
 Build first if the local app is missing:
   script/local-signing all
@@ -28,7 +30,7 @@ Build first if the local app is missing:
 Options handled by this launcher:
   -h, --help   Show this help.
 
-All other arguments are passed through to Handy.
+All other arguments are passed through to $PRODUCT_NAME.
 EOF
 }
 
@@ -37,12 +39,38 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+if [[ "$BUNDLE_ID" == "$UPSTREAM_BUNDLE_ID" ]]; then
+  printf 'Refusing to launch local Handy with upstream bundle identifier: %s\n' "$UPSTREAM_BUNDLE_ID" >&2
+  printf 'Rebuild with the default local identity: script/local-signing all\n' >&2
+  exit 1
+fi
+
+if [[ ! "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+([.][A-Za-z0-9-]+)+$ ]]; then
+  printf 'Invalid local bundle identifier: %s\n' "$BUNDLE_ID" >&2
+  exit 1
+fi
+
+if [[ -z "$PRODUCT_NAME" || "$PRODUCT_NAME" == */* ]]; then
+  printf "Invalid local product name: %s\n" "$PRODUCT_NAME" >&2
+  exit 1
+fi
+
+if [[ -d "$APP_DIR" ]]; then
+  actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIR/Contents/Info.plist" 2>/dev/null || true)"
+  if [[ "$actual_bundle_id" != "$BUNDLE_ID" ]]; then
+    printf '%s has unexpected bundle identifier: %s\n' "$APP_DIR" "${actual_bundle_id:-unknown}" >&2
+    printf 'Expected: %s\n' "$BUNDLE_ID" >&2
+    printf 'Rebuild with: script/local-signing all\n' >&2
+    exit 1
+  fi
+
+  "$ROOT_DIR/script/local-signing" verify >/dev/null
+fi
+
 if [[ -x "$APP_BIN_LOWER" ]]; then
   exec "$APP_BIN_LOWER" "$@"
-elif [[ -x "$APP_BIN_UPPER" ]]; then
-  exec "$APP_BIN_UPPER" "$@"
-elif [[ -x "$FALLBACK_BIN" ]]; then
-  exec "$FALLBACK_BIN" "$@"
+elif [[ -x "$APP_BIN_PRODUCT" ]]; then
+  exec "$APP_BIN_PRODUCT" "$@"
 fi
 
 cat >&2 <<EOF
@@ -50,8 +78,7 @@ Local Handy build not found.
 
 Expected one of:
   $APP_BIN_LOWER
-  $APP_BIN_UPPER
-  $FALLBACK_BIN
+  $APP_BIN_PRODUCT
 
 Build it with:
   script/local-signing all
