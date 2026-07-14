@@ -173,6 +173,12 @@ valid_identity_exists() {
   security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -F "\"$IDENTITY\"" >/dev/null
 }
 
+valid_identity_sha1() {
+  resolve_keychain
+  security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null \
+    | awk -v identity="\"$IDENTITY\"" 'index($0, identity) { print tolower($2); exit }'
+}
+
 print_trust_instructions() {
   cat <<EOF
 The identity exists but is not trusted for code signing yet.
@@ -356,7 +362,7 @@ build_app() {
 }
 
 verify_app() {
-  require_macos
+  require_keychain_access
   require_command codesign
   validate_local_app_config
 
@@ -367,6 +373,8 @@ verify_app() {
   fi
 
   local details
+  local app_identity_sha1
+  local expected_identity_sha1
   if ! details="$(codesign -dvvv -r- "$APP_DIR" 2>&1)"; then
     printf '%s\n' "$details" >&2
     die "failed to inspect code signature for: $APP_DIR"
@@ -381,7 +389,18 @@ verify_app() {
     die "$PRODUCT_NAME.app is still ad-hoc signed. Rebuild with: script/local-signing build"
   fi
 
-  if ! grep -F "\"$IDENTITY\"" <<<"$details" >/dev/null && ! grep -F "Authority=$IDENTITY" <<<"$details" >/dev/null; then
+  app_identity_sha1="$(sed -nE 's/.*certificate leaf = H"([0-9A-Fa-f]+)".*/\1/p' <<<"$details" | tr '[:upper:]' '[:lower:]')"
+  expected_identity_sha1="$(valid_identity_sha1)"
+
+  if [[ -z "$app_identity_sha1" ]]; then
+    die "$PRODUCT_NAME.app signature does not expose a leaf certificate fingerprint."
+  fi
+
+  if [[ -z "$expected_identity_sha1" ]]; then
+    die "could not find expected signing identity in keychain: $IDENTITY"
+  fi
+
+  if [[ "$app_identity_sha1" != "$expected_identity_sha1" ]]; then
     die "$PRODUCT_NAME.app is signed, but not with expected identity: $IDENTITY"
   fi
 

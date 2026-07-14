@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_BUNDLE_ID="com.pais.handy"
 BUNDLE_ID="${HANDY_LOCAL_BUNDLE_ID:-com.rsanheim.handy}"
 PRODUCT_NAME="${HANDY_LOCAL_PRODUCT_NAME:-Handy Local}"
-SIGNING_IDENTITY="${HANDY_LOCAL_SIGNING_IDENTITY:-Handy Local Code Signing}"
 APP_DIR="$ROOT_DIR/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app"
 APP_BIN_LOWER="$APP_DIR/Contents/MacOS/handy"
 APP_BIN_PRODUCT="$APP_DIR/Contents/MacOS/$PRODUCT_NAME"
@@ -65,32 +64,7 @@ if [[ -d "$APP_DIR" ]]; then
     exit 1
   fi
 
-  if ! signature_details="$(codesign -dvvv "$APP_DIR" 2>&1)"; then
-    printf '%s\n' "$signature_details" >&2
-    printf 'Unable to inspect the code signature for: %s\n' "$APP_DIR" >&2
-    printf 'Rebuild with: script/local-signing all\n' >&2
-    exit 1
-  fi
-
-  if grep -q 'Signature=adhoc' <<<"$signature_details"; then
-    printf '%s is ad-hoc signed; Accessibility permissions may not survive rebuilds.\n' "$APP_DIR" >&2
-    printf 'Rebuild with: script/local-signing all\n' >&2
-    exit 1
-  fi
-
-  if ! grep -F "Authority=$SIGNING_IDENTITY" <<<"$signature_details" >/dev/null \
-    && ! grep -F "\"$SIGNING_IDENTITY\"" <<<"$signature_details" >/dev/null; then
-    printf '%s has an unexpected signing identity.\n' "$APP_DIR" >&2
-    printf 'Expected: %s\n' "$SIGNING_IDENTITY" >&2
-    printf 'Rebuild with: script/local-signing all\n' >&2
-    exit 1
-  fi
-
-  if ! codesign --verify --deep --strict "$APP_DIR" >/dev/null 2>&1; then
-    printf '%s has an invalid code signature.\n' "$APP_DIR" >&2
-    printf 'Rebuild with: script/local-signing all\n' >&2
-    exit 1
-  fi
+  "$ROOT_DIR/script/local-signing" verify >/dev/null
 fi
 
 if [[ -x "$APP_BIN_LOWER" ]]; then
