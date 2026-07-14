@@ -25,8 +25,12 @@ cleanup_temp_dir() {
   fi
 }
 
+normalize_keychain_path() {
+  sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//'
+}
+
 default_keychain() {
-  security default-keychain -d user | tr -d '"'
+  security default-keychain -d user | normalize_keychain_path
 }
 
 usage() {
@@ -405,6 +409,7 @@ self_test() {
   local config_output
   local command_output
   local help_output
+  local keychain_output
 
   assert_contains() {
     local haystack="$1"
@@ -433,6 +438,12 @@ self_test() {
   help_output="$(usage)"
   assert_contains "$help_output" 'Typical flow:'
   assert_contains "$help_output" 'script/local-signing all'
+
+  keychain_output="$(printf '    "/Users/example/Library/Keychains/login.keychain-db"\n' | normalize_keychain_path)"
+  if [[ "$keychain_output" != '/Users/example/Library/Keychains/login.keychain-db' ]]; then
+    printf 'Failed to normalize default keychain path. Actual output: %q\n' "$keychain_output" >&2
+    exit 1
+  fi
 
   IDENTITY="$original_identity"
 
