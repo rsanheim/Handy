@@ -13,6 +13,11 @@ changelog remains the source of truth for official releases.
 - Add `script/local-signing` for repeatable local macOS app bundle signing with
   a stable self-signed code-signing identity. `script/local-signing all` runs
   setup, trust, build, and verification as one interactive workflow.
+- Build the fork as `Handy Local` with identifier `com.rsanheim.handy`, keeping
+  its macOS permissions, data, logs, and single-instance namespace separate from
+  the released `com.pais.handy` app.
+- Refuse local builds and launches that accidentally reuse the upstream bundle
+  identifier.
 - Update `script/handy` to point missing local builds at
   `script/local-signing all` instead of ad-hoc Tauri build commands.
 - Document the local signing and Accessibility/TCC reset workflow in

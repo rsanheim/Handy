@@ -38,20 +38,17 @@ Open Between Transcriptions** is enabled and the stream is already open.
 
 ## Existing Installed Release
 
-Handy uses the macOS app identifier `com.pais.handy` and Tauri's single-instance
-plugin. Running a development or locally built copy while the installed release
-is already running will usually talk to the already-running instance instead of
-starting a separate independent app.
+The released Handy app uses the macOS app identifier `com.pais.handy`. Bundles
+built by `script/local-signing` instead use the product name `Handy Local` and
+identifier `com.rsanheim.handy`.
 
-For this experiment, quit the installed Handy release before launching the local
-build. Use the tray/menu-bar quit action, or run:
+The identifier split gives the fork its own macOS permission records,
+application data, logs, and Tauri single-instance namespace. The released app
+and `Handy Local` can launch independently. Avoid assigning both apps the same
+global shortcut if they are running at the same time.
 
-```bash
-pkill -x Handy
-```
-
-Do not leave the release build running while testing this branch, or you may be
-testing the installed release instead of the local build.
+The split is applied only by the fork-local signing script. It does not modify
+upstream `src-tauri/tauri.conf.json`.
 
 ## One-Time Setup
 
@@ -70,26 +67,25 @@ again.
 
 ## Run Without Installing
 
-This is the fastest way to try the change:
+Do not use bare `bun run tauri dev` when testing Accessibility or single-instance
+behavior for this fork. The upstream development configuration still uses
+`com.pais.handy`, so it does not get the identifier isolation described here.
+
+Use the signed local bundle instead:
 
 ```bash
-bun run tauri dev
+script/local-signing all
+script/handy
 ```
 
-If macOS or CMake complains during startup, use:
-
-```bash
-CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri dev
-```
-
-The dev app uses the same application data directory as the release build:
+The signed local app uses its own application data directory:
 
 ```text
-~/Library/Application Support/com.pais.handy/
+~/Library/Application Support/com.rsanheim.handy/
 ```
 
-That means your existing Handy settings and downloaded transcription models are
-shared. The source checkout is separate; your installed `.app` is not replaced.
+Settings and downloaded models from the released app are not shared
+automatically. Expect first-run setup in `Handy Local`.
 
 ## Build a Local App Bundle
 
@@ -101,9 +97,10 @@ script/local-signing all
 
 `script/local-signing all` creates a self-signed code-signing identity named
 `Handy Local Code Signing` if it does not already exist, trusts it when needed,
-builds the signed app bundle, and verifies the resulting signature. Run it from
-an interactive terminal because macOS may prompt for permission to update
-certificate trust. The build disables updater artifacts for this local-only app.
+builds `Handy Local.app` with identifier `com.rsanheim.handy`, and verifies both
+the identifier and resulting signature. Run it from an interactive terminal
+because macOS may prompt for permission to update certificate trust. The build
+disables updater artifacts for this local-only app.
 
 The individual `setup`, `trust`, `build`, and `verify` commands remain available
 for troubleshooting or running one step at a time.
@@ -120,7 +117,7 @@ script/local-signing help
 The bundle will be written under:
 
 ```text
-src-tauri/target/release/bundle/macos/
+src-tauri/target/release/bundle/macos/Handy Local.app
 ```
 
 The local signing helper builds the `.app` bundle only. If you need a DMG, build
@@ -133,30 +130,28 @@ prerelease suffix:
 src-tauri/target/release/bundle/dmg/Handy_0.8.3-rsanheim-rc1_aarch64.dmg
 ```
 
-This does not overwrite the installed release in `/Applications` unless you copy
-the locally built app there yourself. If you launch the local bundle while the
-installed release is running, the single-instance behavior still applies, so quit
-the release first.
+This does not overwrite `/Applications/Handy.app`. The different product name
+and identifier keep the local bundle distinct even if both are running.
 
 ## Accessibility Permissions For Local Builds
 
-The released Handy app and this fork currently use the same macOS application
-identifier, `com.pais.handy`. macOS Accessibility permissions are tied to that
-identifier and the app's code signature. A stable local signing identity keeps
-the fork's code signature consistent across rebuilds, so macOS should not ask
-for Accessibility permission again after every local build.
+The released app and local fork have separate Accessibility entries:
 
-If Accessibility was previously granted to the released app or an ad-hoc-signed
-local build, reset the permission once before granting it to the signed local
-fork:
+- Released Handy: `com.pais.handy`
+- Handy Local: `com.rsanheim.handy`
+
+Grant Accessibility to `Handy Local` when macOS first asks. Its stable local
+signing identity keeps that grant valid across rebuilds without displacing the
+released app's grant.
+
+If the local grant needs to be reset, reset only the local identifier:
 
 ```bash
-tccutil reset Accessibility com.pais.handy
+tccutil reset Accessibility com.rsanheim.handy
 ```
 
-Then launch the local bundle and grant Accessibility permission when macOS asks.
-Switching back to the released app may require the same reset-and-grant flow
-because both apps share the same identifier.
+Do not reset `com.pais.handy` unless you intentionally want to reset permissions
+for the released app.
 
 ## Verify the Experiment
 
@@ -167,16 +162,16 @@ After launching the local build:
 3. Start another transcription within 10 minutes.
 4. Check the Handy log for the absence of a fresh cold microphone-open delay.
 
-On macOS, Handy logs are under:
+On macOS, `Handy Local` logs are under:
 
 ```text
-~/Library/Logs/com.pais.handy/handy.log
+~/Library/Logs/com.rsanheim.handy/handy.log
 ```
 
 You can follow them while testing:
 
 ```bash
-tail -f ~/Library/Logs/com.pais.handy/handy.log
+tail -f ~/Library/Logs/com.rsanheim.handy/handy.log
 ```
 
 ## Trace The Startup Hot Path
@@ -204,7 +199,7 @@ logs, prefer `HANDY_PERF_TRACE=1` without `--debug`.
 Then follow the log:
 
 ```bash
-tail -f ~/Library/Logs/com.pais.handy/handy.log | grep 'perf.hot_path'
+tail -f ~/Library/Logs/com.rsanheim.handy/handy.log | grep 'perf.hot_path'
 ```
 
 The trace lines include a `trace_id`, event name, and elapsed milliseconds from

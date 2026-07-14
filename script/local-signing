@@ -2,11 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$ROOT_DIR/src-tauri/target/release/bundle/macos/Handy.app"
+UPSTREAM_BUNDLE_ID="com.pais.handy"
+DEFAULT_BUNDLE_ID="com.rsanheim.handy"
+DEFAULT_PRODUCT_NAME="Handy Local"
 DEFAULT_IDENTITY="Handy Local Code Signing"
+BUNDLE_ID="${HANDY_LOCAL_BUNDLE_ID:-$DEFAULT_BUNDLE_ID}"
+PRODUCT_NAME="${HANDY_LOCAL_PRODUCT_NAME:-$DEFAULT_PRODUCT_NAME}"
 IDENTITY="${HANDY_LOCAL_SIGNING_IDENTITY:-$DEFAULT_IDENTITY}"
 DAYS="${HANDY_LOCAL_SIGNING_DAYS:-3650}"
 KEYCHAIN="${HANDY_LOCAL_SIGNING_KEYCHAIN:-}"
+APP_DIR="$ROOT_DIR/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app"
 TEMP_DIR=""
 
 die() {
@@ -28,14 +33,14 @@ usage() {
   cat <<EOF
 Usage: script/local-signing <command>
 
-Create and use a stable local macOS code-signing identity for this Handy fork.
+Build this Handy fork with a separate macOS identity and stable signing certificate.
 
 Commands:
   all                  Set up signing, build the app, and verify the result.
   setup                Create the local signing identity if it is missing.
   trust                Trust the local identity for code signing.
   build                Ensure the identity exists, then build a signed .app bundle.
-  verify               Verify the built Handy.app is signed and not ad-hoc.
+  verify               Verify the local app identity and code signature.
   test                 Check dry-run config and build command output.
   help                 Show this help.
 
@@ -43,6 +48,10 @@ Typical flow:
   script/local-signing all
 
 Environment:
+  HANDY_LOCAL_BUNDLE_ID         Local macOS bundle identifier.
+                                 Default: $DEFAULT_BUNDLE_ID
+  HANDY_LOCAL_PRODUCT_NAME      Local macOS application name.
+                                 Default: $DEFAULT_PRODUCT_NAME
   HANDY_LOCAL_SIGNING_IDENTITY   Signing identity name.
                                  Default: $DEFAULT_IDENTITY
   HANDY_LOCAL_SIGNING_KEYCHAIN   Keychain path.
@@ -51,6 +60,9 @@ Environment:
                                  Default: 3650
 
 Notes:
+  - Local builds must not use the upstream $UPSTREAM_BUNDLE_ID identifier.
+    Keeping the identifiers separate isolates permissions, data, logs, and the
+    single-instance namespace from the released Handy app.
   - This is for local development only. It is not Developer ID signing and it
     does not notarize the app.
   - The all and trust commands may prompt for permission to update certificate
@@ -79,6 +91,20 @@ require_command() {
 validate_days() {
   if [[ ! "$DAYS" =~ ^[1-9][0-9]*$ ]]; then
     die "HANDY_LOCAL_SIGNING_DAYS must be a positive integer. Current value: $DAYS"
+  fi
+}
+
+validate_local_app_config() {
+  if [[ "$BUNDLE_ID" == "$UPSTREAM_BUNDLE_ID" ]]; then
+    die "local bundle identifier must differ from upstream: $UPSTREAM_BUNDLE_ID"
+  fi
+
+  if [[ ! "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+([.][A-Za-z0-9-]+)+$ ]]; then
+    die "HANDY_LOCAL_BUNDLE_ID is not a valid bundle identifier: $BUNDLE_ID"
+  fi
+
+  if [[ -z "$PRODUCT_NAME" || "$PRODUCT_NAME" == */* ]]; then
+    die "HANDY_LOCAL_PRODUCT_NAME must be a non-empty app name without '/'. Current value: $PRODUCT_NAME"
   fi
 }
 
@@ -111,8 +137,13 @@ json_escape() {
 
 tauri_config() {
   local escaped_identity
+  local escaped_bundle_id
+  local escaped_product_name
   escaped_identity="$(json_escape "$IDENTITY")"
-  printf '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"%s"}}}' "$escaped_identity"
+  escaped_bundle_id="$(json_escape "$BUNDLE_ID")"
+  escaped_product_name="$(json_escape "$PRODUCT_NAME")"
+  printf '{"productName":"%s","identifier":"%s","bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"%s"}}}' \
+    "$escaped_product_name" "$escaped_bundle_id" "$escaped_identity"
 }
 
 shell_quote() {
@@ -219,6 +250,7 @@ EOF
 setup_identity() {
   local show_trust_instructions="${1:-true}"
 
+  validate_local_app_config
   require_keychain_access
   require_command openssl
   validate_days
@@ -253,6 +285,7 @@ setup_identity() {
 }
 
 trust_identity() {
+  validate_local_app_config
   require_keychain_access
 
   if ! identity_record_exists; then
@@ -295,13 +328,16 @@ require_valid_identity() {
 }
 
 build_signed_app() {
+  validate_local_app_config
   require_valid_identity
   require_command bun
 
   local config
   config="$(tauri_config)"
 
-  printf 'Building Handy.app with signing identity: %s\n' "$IDENTITY"
+  printf 'Building %s.app\n' "$PRODUCT_NAME"
+  printf 'Bundle identifier: %s\n' "$BUNDLE_ID"
+  printf 'Signing identity: %s\n' "$IDENTITY"
   printf 'Keychain: %s\n' "$KEYCHAIN"
   printf 'Command: '
   print_build_command
@@ -318,9 +354,10 @@ build_app() {
 verify_app() {
   require_macos
   require_command codesign
+  validate_local_app_config
 
   if [[ ! -d "$APP_DIR" ]]; then
-    printf 'Handy.app was not found at %s\n' "$APP_DIR" >&2
+    printf '%s.app was not found at %s\n' "$PRODUCT_NAME" "$APP_DIR" >&2
     printf 'Build it first with: script/local-signing build\n' >&2
     exit 1
   fi
@@ -332,19 +369,23 @@ verify_app() {
   fi
   printf '%s\n' "$details"
 
+  if ! grep -F "Identifier=$BUNDLE_ID" <<<"$details" >/dev/null; then
+    die "$PRODUCT_NAME.app does not use expected bundle identifier: $BUNDLE_ID"
+  fi
+
   if grep -q 'Signature=adhoc' <<<"$details"; then
-    die 'Handy.app is still ad-hoc signed. Rebuild with: script/local-signing build'
+    die "$PRODUCT_NAME.app is still ad-hoc signed. Rebuild with: script/local-signing build"
   fi
 
   if ! grep -F "\"$IDENTITY\"" <<<"$details" >/dev/null && ! grep -F "Authority=$IDENTITY" <<<"$details" >/dev/null; then
-    die "Handy.app is signed, but not with expected identity: $IDENTITY"
+    die "$PRODUCT_NAME.app is signed, but not with expected identity: $IDENTITY"
   fi
 
   if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
     die "codesign verification failed for: $APP_DIR"
   fi
 
-  printf 'Verified Handy.app is signed with: %s\n' "$IDENTITY"
+  printf 'Verified %s.app (%s) is signed with: %s\n' "$PRODUCT_NAME" "$BUNDLE_ID" "$IDENTITY"
 }
 
 run_all() {
@@ -378,12 +419,15 @@ self_test() {
   IDENTITY="$expected_identity"
 
   config_output="$(tauri_config)"
+  assert_contains "$config_output" "\"productName\":\"$PRODUCT_NAME\""
+  assert_contains "$config_output" "\"identifier\":\"$BUNDLE_ID\""
   assert_contains "$config_output" '"createUpdaterArtifacts":false'
   assert_contains "$config_output" '"macOS"'
   assert_contains "$config_output" '"signingIdentity":"Handy Test Signing Identity"'
 
   command_output="$(print_build_command)"
   assert_contains "$command_output" 'bun run tauri -- build --bundles app --config'
+  assert_contains "$command_output" "\"identifier\":\"$BUNDLE_ID\""
   assert_contains "$command_output" '"signingIdentity":"Handy Test Signing Identity"'
 
   help_output="$(usage)"
