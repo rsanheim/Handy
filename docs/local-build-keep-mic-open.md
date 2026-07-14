@@ -150,6 +150,10 @@ an ad-hoc or invalid signature, or a signing-certificate fingerprint that does
 not match `Handy Local Code Signing` in your Keychain. Rebuild with
 `script/local-signing all` if that check fails.
 
+The launcher opens the `.app` through macOS Launch Services instead of directly
+executing its inner binary. This makes `Handy Local` the application responsible
+for its Accessibility request rather than the terminal that started the script.
+
 To check an existing bundle without rebuilding or launching it:
 
 ```bash

@@ -24,6 +24,8 @@ changelog remains the source of truth for official releases.
   app against the signing identity's certificate fingerprint.
 - Reuse `script/local-signing verify` from `script/handy` so build and launch
   checks cannot drift apart.
+- Launch `Handy Local.app` through macOS Launch Services so Accessibility is
+  attributed to the local app instead of the invoking terminal.
 - Update `script/handy` to point missing local builds at
   `script/local-signing all` instead of ad-hoc Tauri build commands.
 - Document the local signing and Accessibility/TCC reset workflow in

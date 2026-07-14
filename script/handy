@@ -6,14 +6,13 @@ UPSTREAM_BUNDLE_ID="com.pais.handy"
 BUNDLE_ID="${HANDY_LOCAL_BUNDLE_ID:-com.rsanheim.handy}"
 PRODUCT_NAME="${HANDY_LOCAL_PRODUCT_NAME:-Handy Local}"
 APP_DIR="$ROOT_DIR/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app"
-APP_BIN_LOWER="$APP_DIR/Contents/MacOS/handy"
-APP_BIN_PRODUCT="$APP_DIR/Contents/MacOS/$PRODUCT_NAME"
 
 usage() {
   cat <<EOF
 Usage: script/handy [ARGS...]
 
-Launch the locally built $PRODUCT_NAME app and forward all arguments.
+Launch the locally built $PRODUCT_NAME app through macOS Launch Services and
+forward all arguments.
 
 Examples:
   script/handy
@@ -55,32 +54,31 @@ if [[ -z "$PRODUCT_NAME" || "$PRODUCT_NAME" == */* ]]; then
   exit 1
 fi
 
-if [[ -d "$APP_DIR" ]]; then
-  actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIR/Contents/Info.plist" 2>/dev/null || true)"
-  if [[ "$actual_bundle_id" != "$BUNDLE_ID" ]]; then
-    printf '%s has unexpected bundle identifier: %s\n' "$APP_DIR" "${actual_bundle_id:-unknown}" >&2
-    printf 'Expected: %s\n' "$BUNDLE_ID" >&2
-    printf 'Rebuild with: script/local-signing all\n' >&2
-    exit 1
-  fi
-
-  "$ROOT_DIR/script/local-signing" verify >/dev/null
-fi
-
-if [[ -x "$APP_BIN_LOWER" ]]; then
-  exec "$APP_BIN_LOWER" "$@"
-elif [[ -x "$APP_BIN_PRODUCT" ]]; then
-  exec "$APP_BIN_PRODUCT" "$@"
-fi
-
-cat >&2 <<EOF
+if [[ ! -d "$APP_DIR" ]]; then
+  cat >&2 <<EOF
 Local Handy build not found.
 
-Expected one of:
-  $APP_BIN_LOWER
-  $APP_BIN_PRODUCT
+Expected:
+  $APP_DIR
 
 Build it with:
   script/local-signing all
 EOF
-exit 1
+  exit 1
+fi
+
+actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIR/Contents/Info.plist" 2>/dev/null || true)"
+if [[ "$actual_bundle_id" != "$BUNDLE_ID" ]]; then
+  printf '%s has unexpected bundle identifier: %s\n' "$APP_DIR" "${actual_bundle_id:-unknown}" >&2
+  printf 'Expected: %s\n' "$BUNDLE_ID" >&2
+  printf 'Rebuild with: script/local-signing all\n' >&2
+  exit 1
+fi
+
+"$ROOT_DIR/script/local-signing" verify >/dev/null
+
+if (($# > 0)); then
+  exec /usr/bin/open -n "$APP_DIR" --args "$@"
+fi
+
+exec /usr/bin/open -n "$APP_DIR"

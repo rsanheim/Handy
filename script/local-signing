@@ -404,7 +404,9 @@ verify_app() {
     die "$PRODUCT_NAME.app is signed, but not with expected identity: $IDENTITY"
   fi
 
-  if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
+  local verification_output
+  if ! verification_output="$(codesign --verify --deep --strict --verbose=2 "$APP_DIR" 2>&1)"; then
+    printf '%s\n' "$verification_output" >&2
     die "codesign verification failed for: $APP_DIR"
   fi
 
