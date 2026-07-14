@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_DIR="$ROOT_DIR/src-tauri/target/release/bundle/macos/Handy.app"
+DEFAULT_IDENTITY="Handy Local Code Signing"
+IDENTITY="${HANDY_LOCAL_SIGNING_IDENTITY:-$DEFAULT_IDENTITY}"
+DAYS="${HANDY_LOCAL_SIGNING_DAYS:-3650}"
+KEYCHAIN="${HANDY_LOCAL_SIGNING_KEYCHAIN:-}"
+TEMP_DIR=""
+
+die() {
+  printf 'script/local-signing: %s\n' "$*" >&2
+  exit 1
+}
+
+cleanup_temp_dir() {
+  if [[ -n "${TEMP_DIR:-}" ]]; then
+    rm -rf "$TEMP_DIR"
+  fi
+}
+
+default_keychain() {
+  security default-keychain -d user | tr -d '"'
+}
+
+usage() {
+  cat <<EOF
+Usage: script/local-signing <command>
+
+Create and use a stable local macOS code-signing identity for this Handy fork.
+
+Commands:
+  all                  Set up signing, build the app, and verify the result.
+  setup                Create the local signing identity if it is missing.
+  trust                Trust the local identity for code signing.
+  build                Ensure the identity exists, then build a signed .app bundle.
+  verify               Verify the built Handy.app is signed and not ad-hoc.
+  test                 Check dry-run config and build command output.
+  help                 Show this help.
+
+Typical flow:
+  script/local-signing all
+
+Environment:
+  HANDY_LOCAL_SIGNING_IDENTITY   Signing identity name.
+                                 Default: $DEFAULT_IDENTITY
+  HANDY_LOCAL_SIGNING_KEYCHAIN   Keychain path.
+                                 Default: current user default keychain
+  HANDY_LOCAL_SIGNING_DAYS       Certificate validity in days.
+                                 Default: 3650
+
+Notes:
+  - This is for local development only. It is not Developer ID signing and it
+    does not notarize the app.
+  - The all and trust commands may prompt for permission to update certificate
+    trust. Run them from an interactive terminal.
+  - If HANDY_LOCAL_SIGNING_KEYCHAIN points at a non-default keychain, that
+    keychain must also be on your user keychain search list for Tauri builds.
+  - The first signed build may prompt for permission to let codesign use the
+    imported private key.
+EOF
+}
+
+require_macos() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    die 'local signing is only supported on macOS.'
+  fi
+}
+
+require_command() {
+  local command_name="$1"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    die "required command not found: $command_name"
+  fi
+}
+
+validate_days() {
+  if [[ ! "$DAYS" =~ ^[1-9][0-9]*$ ]]; then
+    die "HANDY_LOCAL_SIGNING_DAYS must be a positive integer. Current value: $DAYS"
+  fi
+}
+
+resolve_keychain() {
+  if [[ -n "$KEYCHAIN" ]]; then
+    return
+  fi
+
+  if ! KEYCHAIN="$(default_keychain)"; then
+    die 'could not determine the default user keychain. Set HANDY_LOCAL_SIGNING_KEYCHAIN to a keychain path.'
+  fi
+
+  if [[ -z "$KEYCHAIN" ]]; then
+    die 'default user keychain is empty. Set HANDY_LOCAL_SIGNING_KEYCHAIN to a keychain path.'
+  fi
+}
+
+require_keychain_access() {
+  require_macos
+  require_command security
+  resolve_keychain
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+tauri_config() {
+  local escaped_identity
+  escaped_identity="$(json_escape "$IDENTITY")"
+  printf '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"%s"}}}' "$escaped_identity"
+}
+
+shell_quote() {
+  local value="$1"
+  printf "'"
+  printf '%s' "$value" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+print_build_command() {
+  local config
+  config="$(tauri_config)"
+  printf 'bun run tauri -- build --bundles app --config %s\n' "$(shell_quote "$config")"
+}
+
+identity_record_exists() {
+  resolve_keychain
+  security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -F "\"$IDENTITY\"" >/dev/null
+}
+
+valid_identity_exists() {
+  resolve_keychain
+  security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -F "\"$IDENTITY\"" >/dev/null
+}
+
+print_trust_instructions() {
+  cat <<EOF
+The identity exists but is not trusted for code signing yet.
+
+Run this from an interactive terminal with the same environment:
+  script/local-signing trust
+
+Or open Keychain Access, find "$IDENTITY", and set Code Signing trust to Always Trust.
+EOF
+}
+
+create_identity() {
+  TEMP_DIR="$(mktemp -d)"
+  trap cleanup_temp_dir EXIT
+
+  local openssl_config="$TEMP_DIR/code-signing.cnf"
+  local key_path="$TEMP_DIR/local-signing.key"
+  local cert_path="$TEMP_DIR/local-signing.crt"
+  local p12_path="$TEMP_DIR/local-signing.p12"
+  local p12_password
+
+  if ! p12_password="$(openssl rand -hex 16)"; then
+    die 'failed to generate a temporary PKCS#12 password with openssl.'
+  fi
+
+  cat >"$openssl_config" <<EOF
+[req]
+distinguished_name = dn
+x509_extensions = v3_req
+prompt = no
+
+[dn]
+CN = $IDENTITY
+
+[v3_req]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = codeSigning
+subjectKeyIdentifier = hash
+EOF
+
+  if ! openssl req \
+    -new \
+    -newkey rsa:2048 \
+    -nodes \
+    -x509 \
+    -sha256 \
+    -days "$DAYS" \
+    -config "$openssl_config" \
+    -keyout "$key_path" \
+    -out "$cert_path" >/dev/null 2>&1; then
+    die "failed to create a self-signed code-signing certificate for \"$IDENTITY\"."
+  fi
+
+  if ! openssl pkcs12 \
+    -export \
+    -legacy \
+    -inkey "$key_path" \
+    -in "$cert_path" \
+    -name "$IDENTITY" \
+    -out "$p12_path" \
+    -passout "pass:$p12_password" >/dev/null 2>&1; then
+    die "failed to package \"$IDENTITY\" as a PKCS#12 identity."
+  fi
+
+  if ! security import "$p12_path" \
+    -k "$KEYCHAIN" \
+    -P "$p12_password" \
+    -T /usr/bin/codesign \
+    -T /usr/bin/security >/dev/null; then
+    die "failed to import \"$IDENTITY\" into keychain: $KEYCHAIN"
+  fi
+
+  cleanup_temp_dir
+  TEMP_DIR=""
+  trap - EXIT
+}
+
+setup_identity() {
+  local show_trust_instructions="${1:-true}"
+
+  require_keychain_access
+  require_command openssl
+  validate_days
+
+  if valid_identity_exists; then
+    printf 'Using existing trusted signing identity: %s\n' "$IDENTITY"
+    printf 'Keychain: %s\n' "$KEYCHAIN"
+    return
+  fi
+
+  if identity_record_exists; then
+    printf 'Found signing identity: %s\n' "$IDENTITY"
+    printf 'Keychain: %s\n' "$KEYCHAIN"
+    if [[ "$show_trust_instructions" == "true" ]]; then
+      print_trust_instructions
+    fi
+    return
+  fi
+
+  printf 'Creating local signing identity: %s\n' "$IDENTITY"
+  printf 'Keychain: %s\n' "$KEYCHAIN"
+  create_identity
+
+  if ! identity_record_exists; then
+    die "created certificate, but it is not visible as a signing identity in keychain: $KEYCHAIN"
+  fi
+
+  printf 'Created signing identity: %s\n' "$IDENTITY"
+  if [[ "$show_trust_instructions" == "true" ]]; then
+    print_trust_instructions
+  fi
+}
+
+trust_identity() {
+  require_keychain_access
+
+  if ! identity_record_exists; then
+    setup_identity false
+  fi
+
+  TEMP_DIR="$(mktemp -d)"
+  trap cleanup_temp_dir EXIT
+
+  local cert_path="$TEMP_DIR/local-signing.crt"
+  if ! security find-certificate -c "$IDENTITY" -p "$KEYCHAIN" >"$cert_path"; then
+    die "failed to export certificate for \"$IDENTITY\" from keychain: $KEYCHAIN"
+  fi
+
+  printf 'Trusting signing identity: %s\n' "$IDENTITY"
+  printf 'Keychain: %s\n' "$KEYCHAIN"
+  if ! security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$cert_path"; then
+    die 'failed to update certificate trust. Run from an interactive terminal or use Keychain Access.'
+  fi
+
+  cleanup_temp_dir
+  TEMP_DIR=""
+  trap - EXIT
+
+  if ! valid_identity_exists; then
+    die "the identity is still not valid for code signing. Check Keychain Access trust settings for \"$IDENTITY\"."
+  fi
+
+  printf 'Trusted signing identity: %s\n' "$IDENTITY"
+}
+
+require_valid_identity() {
+  if valid_identity_exists; then
+    return
+  fi
+
+  printf 'Cannot build because the signing identity is not trusted yet.\n\n' >&2
+  print_trust_instructions >&2
+  exit 1
+}
+
+build_signed_app() {
+  require_valid_identity
+  require_command bun
+
+  local config
+  config="$(tauri_config)"
+
+  printf 'Building Handy.app with signing identity: %s\n' "$IDENTITY"
+  printf 'Keychain: %s\n' "$KEYCHAIN"
+  printf 'Command: '
+  print_build_command
+
+  cd "$ROOT_DIR"
+  bun run tauri -- build --bundles app --config "$config"
+}
+
+build_app() {
+  setup_identity
+  build_signed_app
+}
+
+verify_app() {
+  require_macos
+  require_command codesign
+
+  if [[ ! -d "$APP_DIR" ]]; then
+    printf 'Handy.app was not found at %s\n' "$APP_DIR" >&2
+    printf 'Build it first with: script/local-signing build\n' >&2
+    exit 1
+  fi
+
+  local details
+  if ! details="$(codesign -dvvv -r- "$APP_DIR" 2>&1)"; then
+    printf '%s\n' "$details" >&2
+    die "failed to inspect code signature for: $APP_DIR"
+  fi
+  printf '%s\n' "$details"
+
+  if grep -q 'Signature=adhoc' <<<"$details"; then
+    die 'Handy.app is still ad-hoc signed. Rebuild with: script/local-signing build'
+  fi
+
+  if ! grep -F "\"$IDENTITY\"" <<<"$details" >/dev/null && ! grep -F "Authority=$IDENTITY" <<<"$details" >/dev/null; then
+    die "Handy.app is signed, but not with expected identity: $IDENTITY"
+  fi
+
+  if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
+    die "codesign verification failed for: $APP_DIR"
+  fi
+
+  printf 'Verified Handy.app is signed with: %s\n' "$IDENTITY"
+}
+
+run_all() {
+  setup_identity false
+
+  if ! valid_identity_exists; then
+    trust_identity
+  fi
+
+  build_signed_app
+  verify_app
+}
+
+self_test() {
+  local expected_identity="Handy Test Signing Identity"
+  local original_identity="$IDENTITY"
+  local config_output
+  local command_output
+  local help_output
+
+  assert_contains() {
+    local haystack="$1"
+    local needle="$2"
+
+    if [[ "$haystack" != *"$needle"* ]]; then
+      printf 'Expected output to contain:\n  %s\n\nActual output:\n%s\n' "$needle" "$haystack" >&2
+      exit 1
+    fi
+  }
+
+  IDENTITY="$expected_identity"
+
+  config_output="$(tauri_config)"
+  assert_contains "$config_output" '"createUpdaterArtifacts":false'
+  assert_contains "$config_output" '"macOS"'
+  assert_contains "$config_output" '"signingIdentity":"Handy Test Signing Identity"'
+
+  command_output="$(print_build_command)"
+  assert_contains "$command_output" 'bun run tauri -- build --bundles app --config'
+  assert_contains "$command_output" '"signingIdentity":"Handy Test Signing Identity"'
+
+  help_output="$(usage)"
+  assert_contains "$help_output" 'Typical flow:'
+  assert_contains "$help_output" 'script/local-signing all'
+
+  IDENTITY="$original_identity"
+
+  printf 'local signing dry-run output looks correct\n'
+}
+
+command="${1:-help}"
+case "$command" in
+  all)
+    run_all
+    ;;
+  setup)
+    setup_identity
+    if valid_identity_exists; then
+      printf 'Build with: '
+    else
+      printf 'After trusting the identity, build with: '
+    fi
+    print_build_command
+    ;;
+  trust)
+    trust_identity
+    ;;
+  build)
+    build_app
+    ;;
+  verify)
+    verify_app
+    ;;
+  test)
+    self_test
+    ;;
+  help | -h | --help)
+    usage
+    ;;
+  *)
+    printf 'Unknown command: %s\n\n' "$command" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
