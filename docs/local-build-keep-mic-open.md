@@ -102,6 +102,11 @@ the identifier and resulting signature. Run it from an interactive terminal
 because macOS may prompt for permission to update certificate trust. The build
 disables updater artifacts for this local-only app.
 
+The first run creates and trusts the identity. Later runs reuse that identity,
+rebuild the app, and compare the app's signing-certificate fingerprint with the
+identity in your default user Keychain. This is the normal command to run after
+changing the fork.
+
 The individual `setup`, `trust`, `build`, and `verify` commands remain available
 for troubleshooting or running one step at a time.
 
@@ -120,15 +125,10 @@ The bundle will be written under:
 src-tauri/target/release/bundle/macos/Handy Local.app
 ```
 
-The local signing helper builds the `.app` bundle only. If you need a DMG, build
-one separately after the app bundle is working.
-
-When this fork's prerelease packaging builds a DMG, the DMG name includes the
-prerelease suffix:
-
-```text
-src-tauri/target/release/bundle/dmg/Handy_0.8.3-rsanheim-rc1_aarch64.dmg
-```
+The local signing helper intentionally builds only the `.app` bundle. It does
+not provide a DMG workflow because a bare Tauri packaging command would fall
+back to the upstream product name and identifier unless it repeated all local
+overrides.
 
 This does not overwrite `/Applications/Handy.app`. The different product name
 and identifier keep the local bundle distinct even if both are running.
@@ -144,10 +144,17 @@ Grant Accessibility to `Handy Local` when macOS first asks. Its stable local
 signing identity keeps that grant valid across rebuilds without displacing the
 released app's grant.
 
-`script/handy` refuses to launch a bundle with the upstream identifier, an
-ad-hoc signature, an invalid signature, or a signing identity other than
-`Handy Local Code Signing`. Rebuild with `script/local-signing all` if that
-check fails.
+Before every launch, `script/handy` calls the same verification used by
+`script/local-signing verify`. It refuses a bundle with the upstream identifier,
+an ad-hoc or invalid signature, or a signing-certificate fingerprint that does
+not match `Handy Local Code Signing` in your Keychain. Rebuild with
+`script/local-signing all` if that check fails.
+
+To check an existing bundle without rebuilding or launching it:
+
+```bash
+script/local-signing verify
+```
 
 If the local grant needs to be reset, reset only the local identifier:
 

@@ -20,6 +20,10 @@ changelog remains the source of truth for official releases.
   identifier.
 - Refuse to launch local bundles that are ad-hoc signed, have an invalid
   signature, or do not use the expected stable local signing identity.
+- Normalize the default Keychain path returned by macOS and verify the built
+  app against the signing identity's certificate fingerprint.
+- Reuse `script/local-signing verify` from `script/handy` so build and launch
+  checks cannot drift apart.
 - Update `script/handy` to point missing local builds at
   `script/local-signing all` instead of ad-hoc Tauri build commands.
 - Document the local signing and Accessibility/TCC reset workflow in
