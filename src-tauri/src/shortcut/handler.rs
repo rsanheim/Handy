@@ -9,7 +9,6 @@ use tauri::{AppHandle, Manager};
 
 use crate::actions::ACTION_MAP;
 use crate::managers::audio::AudioRecordingManager;
-use crate::perf_trace::PerfTrace;
 use crate::settings::get_settings;
 use crate::transcription_coordinator::is_transcribe_binding;
 use crate::TranscriptionCoordinator;
@@ -37,26 +36,8 @@ pub fn handle_shortcut_event(
 
     // Transcribe bindings are handled by the coordinator.
     if is_transcribe_binding(binding_id) {
-        let perf_trace = if is_pressed {
-            let trace = PerfTrace::new_if_enabled();
-            if let Some(trace) = trace {
-                trace.log_detail(
-                    "shortcut_event_received",
-                    format_args!("binding_id={binding_id} hotkey={hotkey_string}"),
-                );
-            }
-            trace
-        } else {
-            None
-        };
         if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
-            coordinator.send_input(
-                binding_id,
-                hotkey_string,
-                is_pressed,
-                settings.push_to_talk,
-                perf_trace,
-            );
+            coordinator.send_input(binding_id, hotkey_string, is_pressed, settings.push_to_talk);
         } else {
             warn!("TranscriptionCoordinator is not initialized");
         }
@@ -75,14 +56,14 @@ pub fn handle_shortcut_event(
     if binding_id == "cancel" {
         let audio_manager = app.state::<Arc<AudioRecordingManager>>();
         if audio_manager.is_recording() && is_pressed {
-            action.start(app, binding_id, hotkey_string, None);
+            action.start(app, binding_id, hotkey_string);
         }
         return;
     }
 
     // Remaining bindings (e.g. "test") use simple start/stop on press/release.
     if is_pressed {
-        action.start(app, binding_id, hotkey_string, None);
+        action.start(app, binding_id, hotkey_string);
     } else {
         action.stop(app, binding_id, hotkey_string);
     }

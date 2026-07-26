@@ -1,4 +1,3 @@
-use crate::perf_trace::PerfTrace;
 use crate::settings::SoundTheme;
 use crate::settings::{self, AppSettings};
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -56,71 +55,50 @@ pub fn play_feedback_sound(app: &AppHandle, sound_type: SoundType) {
     }
 }
 
-pub fn play_feedback_sound_blocking(
-    app: &AppHandle,
-    sound_type: SoundType,
-    perf_trace: Option<PerfTrace>,
-) {
+pub fn play_feedback_sound_blocking(app: &AppHandle, sound_type: SoundType) {
     let settings = settings::get_settings(app);
     if !settings.audio_feedback {
-        if let Some(trace) = perf_trace {
-            trace.log_event("audio_feedback_disabled");
-        }
         return;
     }
     if let Some(path) = resolve_sound_path(app, &settings, sound_type) {
-        if let Some(trace) = perf_trace {
-            trace.log_detail(
-                "audio_feedback_path_resolved",
-                format_args!("path={}", path.display()),
-            );
-        }
-        play_sound_blocking(app, &path, perf_trace);
+        play_sound_blocking(app, &path);
     }
 }
 
 pub fn play_test_sound(app: &AppHandle, sound_type: SoundType) {
     let settings = settings::get_settings(app);
     if let Some(path) = resolve_sound_path(app, &settings, sound_type) {
-        play_sound_blocking(app, &path, None);
+        play_sound_blocking(app, &path);
     }
 }
 
 fn play_sound_async(app: &AppHandle, path: PathBuf) {
     let app_handle = app.clone();
     thread::spawn(move || {
-        if let Err(e) = play_sound_at_path(&app_handle, path.as_path(), None) {
+        if let Err(e) = play_sound_at_path(&app_handle, path.as_path()) {
             error!("Failed to play sound '{}': {}", path.display(), e);
         }
     });
 }
 
-fn play_sound_blocking(app: &AppHandle, path: &Path, perf_trace: Option<PerfTrace>) {
-    if let Err(e) = play_sound_at_path(app, path, perf_trace) {
+fn play_sound_blocking(app: &AppHandle, path: &Path) {
+    if let Err(e) = play_sound_at_path(app, path) {
         error!("Failed to play sound '{}': {}", path.display(), e);
     }
 }
 
-fn play_sound_at_path(
-    app: &AppHandle,
-    path: &Path,
-    perf_trace: Option<PerfTrace>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn play_sound_at_path(app: &AppHandle, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let settings = settings::get_settings(app);
     let volume = settings.audio_feedback_volume;
     let selected_device = settings.selected_output_device.clone();
-    play_audio_file(path, selected_device, volume, perf_trace)
+    play_audio_file(path, selected_device, volume)
 }
 
 fn play_audio_file(
     path: &std::path::Path,
     selected_device: Option<String>,
     volume: f32,
-    perf_trace: Option<PerfTrace>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_output_builder_begin");
-    }
     let stream_builder = if let Some(device_name) = selected_device {
         if device_name == "Default" {
             debug!("Using default device");
@@ -149,43 +127,16 @@ fn play_audio_file(
         debug!("Using default device");
         OutputStreamBuilder::from_default_device()?
     };
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_output_builder_complete");
-    }
 
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_output_stream_open_begin");
-    }
     let stream_handle = stream_builder.open_stream()?;
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_output_stream_open_complete");
-    }
     let mixer = stream_handle.mixer();
 
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_file_open_begin");
-    }
     let file = File::open(path)?;
     let buf_reader = BufReader::new(file);
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_file_open_complete");
-    }
 
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_rodio_play_begin");
-    }
     let sink = rodio::play(mixer, buf_reader)?;
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_rodio_play_complete");
-    }
     sink.set_volume(volume);
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_wait_until_end_begin");
-    }
     sink.sleep_until_end();
-    if let Some(trace) = perf_trace {
-        trace.log_event("audio_feedback_wait_until_end_complete");
-    }
 
     Ok(())
 }

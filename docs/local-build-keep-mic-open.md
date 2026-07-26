@@ -192,43 +192,29 @@ tail -f ~/Library/Logs/com.rsanheim.handy/handy.log
 
 ## Trace The Startup Hot Path
 
-Hot-path tracing uses the existing Handy log pipeline. It does not add a new
-dependency, and it only creates traces when explicitly enabled, so normal
-release-style logging does not include these events.
+Upstream now instruments the same start path this fork used to trace by hand, so
+the fork-local `HANDY_PERF_TRACE` tracing has been removed. The upstream timings
+are emitted at debug level through the normal Handy log pipeline.
 
-To enable tracing for a local app bundle, quit any running Handy instance and
-launch the local build with `HANDY_PERF_TRACE=1`:
-
-```bash
-HANDY_PERF_TRACE=1 script/handy
-```
-
-You can still pass normal Handy arguments through the launcher, for example:
+Quit any running Handy instance, then launch the local build with `--debug`:
 
 ```bash
-HANDY_PERF_TRACE=1 script/handy --debug
+script/handy --debug
 ```
-
-`--debug` enables broader app and dependency debug logging. For cleaner timing
-logs, prefer `HANDY_PERF_TRACE=1` without `--debug`.
 
 Then follow the log:
 
 ```bash
-tail -f ~/Library/Logs/com.rsanheim.handy/handy.log | grep 'perf.hot_path'
+tail -f ~/Library/Logs/com.rsanheim.handy/handy.log | grep -E 'start-path|Cmd::Start|first audio chunk|tray icon change'
 ```
 
-The trace lines include a `trace_id`, event name, and elapsed milliseconds from
-the shortcut or external trigger. For the flow this branch is investigating,
-useful events include:
+Useful lines for keypress-to-capture latency:
 
-- `shortcut_event_received`
-- `coordinator_start_dispatch`
-- `try_start_recording_begin`
-- `audio_manager_microphone_stream_already_open`
-- `audio_manager_recorder_start_complete`
-- `startup_feedback_delay_skipped_warm_stream`
-- `audio_feedback_output_stream_open_complete`
-- `audio_recorder_first_resampled_frame`
-
-Launch without `HANDY_PERF_TRACE=1` to disable these hot-path trace events.
+- `start-path pre-recording steps: model_kickoff=... tray=... settings+stream_plan=... overlay=...`
+  breaks down everything that runs before capture can begin.
+- `Cmd::Start processed ... after send` shows how long the start command sat in
+  the recorder channel.
+- `first audio chunk arrived ... after stream start` shows device warm-up cost,
+  which is what `lazy_stream_close` plus the extended `STREAM_IDLE_TIMEOUT` in
+  this fork are meant to avoid paying repeatedly.
+- `tray icon change (...)` shows tray icon and menu update cost on the start path.

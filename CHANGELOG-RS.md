@@ -6,6 +6,42 @@ This file tracks fork-local versions, experiments, and release-candidate builds 
 they can be compared against upstream Handy releases later. The upstream project
 changelog remains the source of truth for official releases.
 
+## 0.9.4-rsanheim-rc1 - 2026-07-25
+
+Base: upstream `main` at `6cad594` (past the `v0.9.4` release tag).
+
+Merge of 80 upstream commits into the fork, spanning upstream releases 0.9.0
+through 0.9.4. See the upstream changelog for the full list.
+
+### Fork-Local Changes Dropped
+
+- Removed the fork-local `perf_trace` hot-path tracing module and the
+  `HANDY_PERF_TRACE=1` environment switch. Upstream now instruments the same
+  start path directly (`start-path pre-recording steps`, `Cmd::Start processed
+  ... after send`, `first audio chunk arrived ...`, `tray icon change ...`), and
+  shipped `faster mic initialization` (#1582). Keeping a parallel tracing
+  mechanism through upstream's refactored `try_start_recording(binding_id,
+  vad_policy)` signature would have duplicated that work.
+- Dropped the fork-local tray icon panic fix. Upstream adopted the same fix in
+  `fix(tray): log tray icon failures instead of panicking` (#1355), so the only
+  remaining fork delta was error-message wording.
+
+### Fork-Local Changes Retained
+
+- `STREAM_IDLE_TIMEOUT` stays at 10 minutes instead of upstream's 30 seconds,
+  with the guard test that fails if a future merge silently reverts it.
+- The paired `lazyStreamClose` UI copy still says 10 minutes.
+- Local macOS signing workflow (`script/local-signing`, `script/handy`) and the
+  `com.rsanheim.handy` / `Handy Local` bundle identity are unchanged.
+
+### Notes
+
+- `docs/local-build-keep-mic-open.md` now documents upstream's debug-level
+  startup timing logs in place of the removed `HANDY_PERF_TRACE` tracing.
+- The `perf_trace` implementation can be recovered from commit `863b161`
+  (`perf: trace warm microphone startup`), reachable from the local
+  `pre-upstream-sync-2026-07-25` tag.
+
 ## 0.8.3-rsanheim-rc3 - 2026-07-14
 
 Base: `0.8.3-rsanheim-rc2`.

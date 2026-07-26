@@ -18,10 +18,9 @@ Examples:
   script/handy
   script/handy --debug
   script/handy --toggle-transcription
-  HANDY_PERF_TRACE=1 script/handy
 
-Hot-path trace output:
-  tail -f ~/Library/Logs/$BUNDLE_ID/handy.log | grep 'perf.hot_path'
+Startup timing output (upstream instrumentation, needs --debug):
+  tail -f ~/Library/Logs/$BUNDLE_ID/handy.log | grep 'start-path'
 
 Build first if the local app is missing:
   script/local-signing all
