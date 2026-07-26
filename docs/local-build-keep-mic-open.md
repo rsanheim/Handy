@@ -50,6 +50,13 @@ global shortcut if they are running at the same time.
 The split is applied only by the fork-local signing script. It does not modify
 upstream `src-tauri/tauri.conf.json`.
 
+Because the split lives in the script rather than the config, a bare
+`bun run tauri build` would otherwise emit a `com.pais.handy` bundle beside the
+local one. `src-tauri/build.rs` blocks that: a macOS release build resolving to
+the upstream identifier fails with a pointer to `script/local-signing build`.
+The guard exempts debug builds (`tauri dev`), CI, and
+`HANDY_ALLOW_UPSTREAM_IDENTITY=1` for a deliberate upstream-identity build.
+
 ## One-Time Setup
 
 From the repository root:

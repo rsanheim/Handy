@@ -34,6 +34,17 @@ through 0.9.4. See the upstream changelog for the full list.
 - Local macOS signing workflow (`script/local-signing`, `script/handy`) and the
   `com.rsanheim.handy` / `Handy Local` bundle identity are unchanged.
 
+### Fork-Local Changes Added
+
+- `src-tauri/build.rs` now refuses a macOS release build that resolves to the
+  upstream `com.pais.handy` identifier, pointing at `script/local-signing build`
+  instead. The identity split is applied by that script via `--config`, so a
+  bare `bun run tauri build` previously produced an upstream-identity bundle
+  beside the local one, which then competed with the released Handy for
+  permissions, application data, logs, and the single-instance namespace.
+  Debug builds (`tauri dev`), CI, and `HANDY_ALLOW_UPSTREAM_IDENTITY=1` are
+  exempt.
+
 ### Notes
 
 - `docs/local-build-keep-mic-open.md` now documents upstream's debug-level

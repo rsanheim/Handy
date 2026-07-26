@@ -1,4 +1,6 @@
 fn main() {
+    guard_upstream_bundle_identity();
+
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     build_apple_intelligence_bridge();
 
@@ -35,6 +37,62 @@ fn main() {
     stage_vc_runtime_dlls();
 
     tauri_build::build()
+}
+
+/// Refuse a local macOS release build that would bundle this fork under the
+/// upstream identifier.
+///
+/// The `Handy Local` / `com.rsanheim.handy` identity split is applied by
+/// `script/local-signing` through `--config`, not by `tauri.conf.json`. A bare
+/// `tauri build` therefore emits a `com.pais.handy` bundle beside the local one,
+/// and that bundle competes with the released Handy for macOS permissions,
+/// application data, logs, and the single-instance namespace.
+///
+/// `tauri dev` builds debug and CI builds upstream artifacts on purpose, so both
+/// are exempt. Set `HANDY_ALLOW_UPSTREAM_IDENTITY=1` to build one deliberately.
+fn guard_upstream_bundle_identity() {
+    const UPSTREAM_IDENTIFIER: &str = "com.pais.handy";
+
+    println!("cargo:rerun-if-env-changed=HANDY_ALLOW_UPSTREAM_IDENTITY");
+    println!("cargo:rerun-if-env-changed=CI");
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+        || std::env::var("PROFILE").as_deref() != Ok("release")
+        || std::env::var_os("CI").is_some()
+        || std::env::var_os("HANDY_ALLOW_UPSTREAM_IDENTITY").is_some()
+    {
+        return;
+    }
+
+    // Mirrors tauri-build: read tauri.conf.json, then let a --config override
+    // (passed through TAURI_CONFIG) replace the identifier.
+    let mut identifier = std::fs::read_to_string("tauri.conf.json")
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|config| config["identifier"].as_str().map(str::to_string));
+
+    if let Ok(raw) = std::env::var("TAURI_CONFIG") {
+        if let Ok(overrides) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(overridden) = overrides["identifier"].as_str() {
+                identifier = Some(overridden.to_string());
+            }
+        }
+    }
+
+    if identifier.as_deref() != Some(UPSTREAM_IDENTIFIER) {
+        return;
+    }
+
+    panic!(
+        "refusing to build a release bundle with the upstream identifier \
+         `{UPSTREAM_IDENTIFIER}`.\n\n\
+         Build this fork with:\n    script/local-signing build\n\n\
+         which bundles it as `Handy Local` (com.rsanheim.handy) and keeps its \
+         permissions, data, logs, and single-instance namespace separate from \
+         the released Handy app.\n\n\
+         Set HANDY_ALLOW_UPSTREAM_IDENTITY=1 to build an upstream-identity \
+         bundle on purpose."
+    );
 }
 
 /// Stage the MSVC runtime DLLs into `transcribe-libs/` for app-local deployment.
