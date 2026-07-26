@@ -17,11 +17,11 @@ through 0.9.4. See the upstream changelog for the full list.
 
 - Removed the fork-local `perf_trace` hot-path tracing module and the
   `HANDY_PERF_TRACE=1` environment switch. Upstream now instruments the same
-  start path directly (`start-path pre-recording steps`, `Cmd::Start processed
-  ... after send`, `first audio chunk arrived ...`, `tray icon change ...`), and
-  shipped `faster mic initialization` (#1582). Keeping a parallel tracing
-  mechanism through upstream's refactored `try_start_recording(binding_id,
-  vad_policy)` signature would have duplicated that work.
+  start path directly, logging `start-path pre-recording steps`,
+  `Cmd::Start processed`, `first audio chunk arrived`, and `tray icon change`,
+  and shipped faster mic initialization (#1582). Keeping a parallel tracing
+  mechanism through upstream's refactored `try_start_recording` signature, which
+  now takes a `VadPolicy`, would have duplicated that work.
 - Dropped the fork-local tray icon panic fix. Upstream adopted the same fix in
   `fix(tray): log tray icon failures instead of panicking` (#1355), so the only
   remaining fork delta was error-message wording.

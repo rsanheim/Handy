@@ -32,6 +32,9 @@ dist-ssr
 recording_*
 .crush/
 
+# Local-only helper tools (e.g. tools/macos-audio-perf)
+tools/
+
 # Playwright
 playwright-report/
 test-results/
