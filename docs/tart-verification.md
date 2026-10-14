@@ -1,8 +1,10 @@
 # Verify the fork in a Tart VM
 
-This fork-only spike runs a **copy** of Handy in a stock Cirrus Labs Sequoia/Xcode
+This fork-only spike runs a **copy** of Handy in a stock Cirrus Labs Sequoia base
 VM, mounting a committed source snapshot, app bundle, model, and test audio. It
-uses Tart's guest agent: no SSH setup or guest Git clone is needed. It does not
+uses Tart's guest agent: no SSH setup or guest Git clone is needed. The base
+image includes Homebrew and the Metal shim; full Xcode and mobile simulators
+are unnecessary for running the copied app. It does not
 build, install, launch, stop, or re-sign the host Handy app.
 
 ## Requirements
@@ -11,8 +13,9 @@ build, install, launch, stop, or re-sign the host Handy app.
   its standard library).
 - An existing `com.rsanheim.handy` app bundle with the fork's headless CLI.
 - A local GGUF model and a **16 kHz, mono, 16-bit PCM WAV** sample.
-- Space for the stock image (approximately 89 GB allocated in the initial spike;
-  local APFS clones can share blocks). The VM uses 4 CPUs and 16 GiB RAM.
+- Space for the stock base image: approximately 25.5 GB to download and 34 GB
+  of actual storage for the tested image and VM together (APFS shares blocks).
+  Its virtual disk capacity is 50 GB. The VM uses 4 CPUs and 16 GiB RAM.
 
 Use an installed `tart`, or set `TART_BIN` to an absolute executable path. The
 original spike downloaded the official 2.41.0 release and verified its published
@@ -36,7 +39,7 @@ script/tart-verify prepare \
   /absolute/path/to/model.gguf \
   /absolute/path/to/sample.wav
 
-# Skip init if handy-sequoia-spike already exists from the original spike.
+# Skip init if handy-sequoia-spike already exists with this base image.
 script/tart-verify init
 script/tart-verify run
 ```
@@ -90,16 +93,15 @@ defaults delete com.apple.gpusw.ParavirtualizedGraphics ForceUnrestrictedDeviceF
 
 ## Observed result and limits
 
-The October 14, 2026 spike used
-`ghcr.io/cirruslabs/macos-sequoia-xcode:latest`, resolved to the digest pinned in
-the script: guest macOS **15.7.7**, Xcode **16.4**, Homebrew **6.0.22**, on a host
-running **15.8.1**. With the shim, the GPU advertised Apple family 1009 and 64 KiB
-threadgroup memory.
+The October 14, 2026 verification used the Sequoia **base** image pinned in the
+script: guest macOS **15.7.7**, Homebrew **7.0.7**, on a host running **15.8.1**.
+The bundled Metal shim and Tart guest agent worked without additional guest
+installation. Full Xcode was not installed or required.
 
 The unchanged copied Handy bundle transcribed an 8.27-second synthetic sample
-using Whisper Large V3 Q5_K_M on `MTL0` in 2.05 seconds, plus 1.17 seconds to load.
+using Whisper Large V3 Q5_K_M on `MTL0` in 1.50 seconds, plus 1.90 seconds to load.
 It heard “Tauri” as “Tori”; this is an execution smoke test, not an accuracy
-benchmark. The host app retained its original PID, executable hash, and signature.
+benchmark. The host app retained its original PID and executable hash.
 
 This does not validate microphone input, Accessibility/TCC permissions, global
 shortcuts, GUI behavior, or updater behavior. Guest OS and virtual GPU behavior

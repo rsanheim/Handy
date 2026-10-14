@@ -7,7 +7,7 @@ require "open3"
 ROOT = File.expand_path("..", __dir__)
 STATE = ENV.fetch("HANDY_TART_DIR", File.join(ROOT, "tools/tart-verify"))
 VM = ENV.fetch("HANDY_TART_VM", "handy-sequoia-spike")
-IMAGE = "ghcr.io/cirruslabs/macos-sequoia-xcode@sha256:d25b1ba480166790c90326c33f9add68c745f38bad443db0bf803ddb50931f72"
+IMAGE = "ghcr.io/cirruslabs/macos-sequoia-base@sha256:eee659985b01e4df2a6c0754bd8d25e54969933c43fdcd4edef8bea337b3d354"
 TART = ENV.fetch("TART_BIN", "tart")
 SHARE = File.join(STATE, "share")
 GUEST_SHARE = "/Volumes/My Shared Files/handy"
@@ -82,7 +82,6 @@ when "check"
   run(TART, "exec", VM, "/bin/bash", "-c", <<~'BASH')
     set -euo pipefail
     /usr/bin/sw_vers
-    /usr/bin/xcodebuild -version
     /opt/homebrew/bin/brew --version
     test -f /usr/local/lib/TartMetalCapabilities.dylib
     test -f "/Volumes/My Shared Files/handy/repo/src-tauri/Cargo.toml"
@@ -96,6 +95,10 @@ when "smoke"
     models="$HOME/Library/Application Support/com.rsanheim.handy/models"
     target="/Volumes/My Shared Files/handy/models"
     mkdir -p "$(dirname "$models")"
+    # Device discovery may have created an empty directory on first launch.
+    if [[ -d "$models" && ! -L "$models" ]]; then
+      rmdir "$models"
+    fi
     if [[ ! -e "$models" && ! -L "$models" ]]; then
       ln -s "$target" "$models"
     fi
