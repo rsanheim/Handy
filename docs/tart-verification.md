@@ -68,7 +68,9 @@ directory, since the running host app currently lives inside its build output.
 `HANDY_TART_VM` overrides the VM name. The stock image pins the exact digest
 tested in the spike rather than tracking `latest`. `init` is for creating a new
 VM, not resetting an existing one. `stop` retains its disk and guest settings
-for reuse.
+for reuse. Checks do not stop the VM automatically; leave it running between
+checks and use `stop` when finished. Keep the host share directory in place while
+the VM is running, even if its source worktree's branch has been merged.
 
 ## Metal defaults
 
@@ -84,6 +86,15 @@ host preference alone does not inject it. `exec`, `check`'s Handy invocation, an
 guest workload. Use `script/tart-verify exec EXECUTABLE ...` for other workloads.
 These defaults apply to this launcher, not arbitrary GUI launches inside the VM.
 
+For build tools, remove the injected library using the existing `exec` command:
+
+```bash
+script/tart-verify exec /usr/bin/env -u DYLD_INSERT_LIBRARIES /bin/bash -lc 'COMMAND'
+```
+
+The mise-installed pnpm executable crashes during startup with the Metal shim
+injected. Keep the shim enabled for inference and worker integration tests.
+
 To restore an originally absent host preference after the spike, stop the VM
 and run:
 
@@ -96,13 +107,56 @@ defaults delete com.apple.gpusw.ParavirtualizedGraphics ForceUnrestrictedDeviceF
 The October 14, 2026 verification used the Sequoia **base** image pinned in the
 script: guest macOS **15.7.7**, Homebrew **7.0.7**, on a host running **15.8.1**.
 The bundled Metal shim and Tart guest agent worked without additional guest
-installation. Full Xcode was not installed or required.
+installation. Command Line Tools, Swift, CMake, Node, and mise were also present.
+Full Xcode was not installed or required. The guest build uses the Apple
+Intelligence stub; it does not validate FoundationModels support.
 
 The unchanged copied Handy bundle transcribed an 8.27-second synthetic sample
 using Whisper Large V3 Q5_K_M on `MTL0` in 1.50 seconds, plus 1.90 seconds to load.
 It heard “Tauri” as “Tori”; this is an execution smoke test, not an accuracy
 benchmark. The host app retained its original PID and executable hash.
 
-This does not validate microphone input, Accessibility/TCC permissions, global
-shortcuts, GUI behavior, or updater behavior. Guest OS and virtual GPU behavior
-also differ from the host. No upstream merge is included in this tooling change.
+The updated `0.9.8-rsanheim-rc1` host bundle also passed Metal transcription and
+GUI onboarding startup. Its source snapshot (`77d1d3d`) was copied from the mount
+to `~/handy-test` in the guest with `ditto`. After `mise trust`, `mise install`,
+and `mise install rust@stable`, the guest compiled the app and passed:
+
+- 276 normal Rust tests and all 16 ignored worker integration tests (87.5 seconds).
+- Three standalone frontend assertion scripts and both Playwright HTML checks.
+- Translation/model-language checks, lint, formatting, frontend build, Clippy
+  (with upstream warnings), and `script/local-signing test`.
+
+The integration fixture was Parakeet Unified EN Q8_0, pinned to catalog revision
+`7e948f21b7bdbac698d3318db9d350f1096f3b6c`, checked against the catalog SHA256,
+with the same 16 kHz mono sample. Whisper cannot cover the streaming tests.
+The guest used Rust 1.99.0, Bun 1.3.13, and pnpm 11.10.0. Its Playwright config's
+server command was changed from `bunx vite dev` to `pnpm exec vite dev` locally.
+
+To repeat the Rust tests in the prepared guest, run these commands through
+`exec /usr/bin/env -u DYLD_INSERT_LIBRARIES /bin/bash -lc '...'`:
+
+```bash
+export PATH=/opt/homebrew/bin:$HOME/.cargo/bin:$PATH
+export CARGO_BUILD_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4
+export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
+cd "$HOME/handy-test/src-tauri"
+mise exec rust@stable -- cargo test --locked
+mise exec rust@stable -- cargo build --locked --bin handy
+
+export HANDY_TRANSCRIBE_WORKER_EXE="$PWD/target/debug/handy"
+export HANDY_TEST_MODEL="$HOME/handy-test-fixtures/parakeet-unified-en-Q8_0.gguf"
+export HANDY_TEST_WAV="$HOME/handy-test-fixtures/sample.wav"
+DYLD_INSERT_LIBRARIES=/usr/local/lib/TartMetalCapabilities.dylib \
+  TART_METAL_APPLE_FAMILY_MAX=1009 \
+  mise exec rust@stable -- cargo test --locked --lib engine_supervisor -- \
+  --ignored --nocapture --test-threads=1
+```
+
+The debug worker is required because fault injection is compiled out of release
+builds. Run those tests serially because they change shared fault settings.
+Disabling debug symbols and incremental builds kept the build within the base
+VM's disk capacity. Build on the guest's disk, using the mount to transfer inputs.
+
+This does not validate physical microphone input, Accessibility/TCC permissions,
+global shortcuts, end-to-end paste, or updater behavior. Guest OS and virtual GPU
+behavior also differ from the host.
