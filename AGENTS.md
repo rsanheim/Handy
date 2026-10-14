@@ -1,217 +1,117 @@
 # AGENTS.md
 
-This file provides guidance to AI coding assistants working with code in this repository.
+Guidance for AI coding assistants working in rsanheim's fork of Handy.
 
-## Development Commands
+This file is fork-local, and `CLAUDE.md` is a symlink to it. Upstream's version is
+preserved verbatim at [AGENTS.upstream.md](AGENTS.upstream.md) — read it for the
+architecture tour, directory map, and tech stack. Keep all three out of any PR sent
+upstream.
 
-**Prerequisites:**
+## Fork layout
 
-- [Rust](https://rustup.rs/) (latest stable)
-- [Bun](https://bun.sh/) package manager
+- `origin` is **upstream** (cjpais/Handy) — merge from it, never push to it. `fork` is
+  **rsanheim/Handy** — push there. `main` already tracks `fork/main`, so a bare
+  `git push` goes to the fork; upstream syncs come from `origin/main`.
+- `script/` (singular) is fork-local tooling. `scripts/` (plural) is upstream's. They
+  are different directories; do not conflate them.
+- `tools/` is gitignored local-only scratch work. Nothing there ships.
+- `AGENTS.md` and `CLAUDE.md` are **upstream-tracked paths** that the fork has replaced.
+  Every upstream merge will conflict on both; resolve by keeping the fork's version, and
+  re-sync `AGENTS.upstream.md` from `origin/main:AGENTS.md` at the same time — nothing
+  enforces that copy staying current.
+- [CHANGELOG-RS.md](CHANGELOG-RS.md) tracks fork-local versions and, more usefully,
+  which fork-local patches were **dropped** because upstream shipped an equivalent.
+  On an upstream merge, prefer upstream's implementation and delete the fork's — keep
+  a fork-local patch only when it encodes behavior upstream does not have, and cover
+  that behavior with a test so the next merge cannot silently erase it.
 
-**Core Development:**
+## Upstream docs that are wrong for this fork
+
+`CRUSH.md`, `CONTRIBUTING.md`, and `AGENTS.upstream.md` are upstream's and predate the
+fork's changes. Specifically:
+
+- They tell you to `curl` the Silero VAD model. **Don't** — `src-tauri/resources/models/silero_vad_v4.onnx`
+  is committed to the repo (1.8 MB, not LFS). The download step is stale upstream
+  boilerplate.
+- `CRUSH.md` says to run `bun run tauri build` for a production build. On macOS that is
+  exactly the command the fork's identity guard rejects — see below.
+
+## macOS bundle identity
+
+The fork builds as `Handy Local` / `com.rsanheim.handy` so it does not fight the
+released Handy over macOS permissions, application data, logs, and the single-instance
+namespace. That split is applied by `script/local-signing` via `--config`, **not** by
+`tauri.conf.json` — which still carries upstream's `com.pais.handy`.
+
+`guard_upstream_bundle_identity()` in `src-tauri/build.rs` fails any **macOS release**
+build that resolves to `com.pais.handy`. It returns early — and so does not fire — for
+non-macOS targets, any debug profile (including `tauri build --debug`, which will happily
+bundle an upstream-identity app), when the `CI` env var is set, or when
+`HANDY_ALLOW_UPSTREAM_IDENTITY=1` is set for a deliberate one.
+
+If you hit that build error, you almost certainly wanted `script/local-signing build`.
+
+## Build setup
 
 ```bash
-# Install dependencies
 bun install
-
-# Run in development mode
 bun run tauri dev
-# If cmake error on macOS:
-CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri dev
-
-# Build for production
-bun run tauri build
-
-# Frontend only development
-bun run dev        # Start Vite dev server
-bun run build      # Build frontend (TypeScript + Vite)
-bun run preview    # Preview built frontend
 ```
 
-**Linting and Formatting (run before committing):**
+`bun run format` runs Prettier **and** `cargo fmt` — it covers both halves of the repo.
+Run it plus `bun run lint` before committing; CI enforces both, plus `format:check` and
+`check:translations`. See [BUILD.md](BUILD.md) for platform-specific setup.
 
-```bash
-bun run lint              # ESLint for frontend
-bun run lint:fix          # ESLint with auto-fix
-bun run format            # Prettier + cargo fmt
-bun run format:check      # Check formatting without changes
-bun run format:frontend   # Prettier only
-bun run format:backend    # cargo fmt only
-```
+Upstream docs mention a `CMAKE_POLICY_VERSION_MINIMUM=3.5` prefix for macOS cmake
+errors. No current dependency appears to need it and nothing in CI sets it — treat it as
+an inherited workaround with no known trigger, not a required step.
 
-**Model Setup (Required for Development):**
+Debug features: `Cmd+Shift+D` (macOS), `Ctrl+Shift+D` elsewhere.
 
-```bash
-mkdir -p src-tauri/resources/models
-curl -L -o src-tauri/resources/models/silero-vad-v6.2-F32.gguf https://huggingface.co/handy-computer/silero-vad-v6.2-gguf/resolve/main/silero-vad-v6.2-F32.gguf
-```
+## Behavior worth knowing before you change it
 
-For detailed platform-specific build setup, see [BUILD.md](BUILD.md).
+**Single instance.** Launching while already running normally forwards the CLI args to
+the running app and exits, bringing the settings window forward. The remote-control flags
+(`--toggle-transcription` and friends) depend on this. The exception is headless mode —
+`--transcribe-file`, `--list-devices`, `--list-models` deliberately skip the plugin and
+run as a standalone process, since forwarding would make them a silent no-op whenever the
+app is already open. Break single-instance and you break the remote-control flags with
+it.
 
-## Architecture Overview
+**CLI flags are runtime-only overrides.** They never write to persisted settings. Run
+`--help` for the current list; `cli.rs` is the definition and `signal_handle.rs` holds
+`send_transcription_input()`, shared between the signal handlers and the CLI.
 
-Handy is a cross-platform desktop speech-to-text application built with Tauri 2.x (Rust backend + React/TypeScript frontend).
+**Linux overlay.** Uses GTK layer shell; disable with `HANDY_NO_GTK_LAYER_SHELL=1`.
+Wayland support is limited.
 
-### Backend Structure (src-tauri/src/)
+**macOS needs accessibility permissions** for global shortcuts. A fresh local build is a
+new bundle identity, so it asks again.
 
-- `lib.rs` - Main entry point, Tauri setup, manager initialization
-- `managers/` - Core business logic:
-  - `audio.rs` - Audio recording and device management
-  - `model.rs` - Model downloading and management
-  - `transcription.rs` - Speech-to-text processing pipeline
-  - `history.rs` - Transcription history storage
-- `audio_toolkit/` - Low-level audio processing:
-  - `audio/` - Recording sink (VAD, levels, live streaming feed), output devices, WAV I/O
-  - `vad/` - Voice Activity Detection (Silero VAD)
-- `commands/` - Tauri command handlers for frontend communication
-- `cli.rs` - CLI argument definitions (clap derive)
-- `shortcut.rs` - Global keyboard shortcut handling
-- `settings.rs` - Application settings management
-- `overlay.rs` - Recording overlay window (platform-specific)
-- `signal_handle.rs` - `send_transcription_input()` reusable function
-- `utils.rs` - Platform detection helpers
+## i18n
 
-### Frontend Structure (src/)
+Every user-facing string goes through i18next. `i18next/no-literal-string` is an ESLint
+error on JSX (`eslint.config.js`), so hardcoded strings fail `bun run lint` and the
+`code-quality` CI job — note `bun run build` is `tsc && vite build` and does _not_ run
+ESLint. English is the reference locale: add keys to
+`src/i18n/locales/en/translation.json` first. Other locales follow
+[CONTRIBUTING_TRANSLATIONS.md](CONTRIBUTING_TRANSLATIONS.md).
 
-- `App.tsx` - Main component with onboarding flow
-- `components/` - React UI components:
-  - `settings/` - Settings UI
-  - `model-selector/` - Model management interface
-  - `onboarding/` - First-run experience
-  - `overlay/` - Recording overlay UI
-  - `update-checker/` - App update notifications
-  - `shared/`, `ui/`, `icons/`, `footer/` - Shared components
-- `hooks/useSettings.ts` - Settings state management hook
-- `stores/settingsStore.ts` - Zustand store for settings
-- `bindings.ts` - Auto-generated Tauri type bindings (via tauri-specta)
-- `overlay/` - Recording overlay window entry point
-- `lib/types.ts` - Shared TypeScript type definitions
+## Contributing upstream
 
-### Key Architecture Patterns
+**Read the template before opening anything.** Upstream requires every section,
+including the ones that look ceremonial — "Human Written Description" (the template says
+outright that a PR may be rejected without one), "Community Feedback", and "AI
+Assistance". A generic Summary/Test-plan layout gets rejected. Where a section needs a
+human-written paragraph, leave a clear TODO and ask Rob to fill it in — do not write in
+his voice.
 
-**Manager Pattern:** Core functionality organized into managers (Audio, Model, Transcription) initialized at startup and managed via Tauri state.
+- PRs: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)
+- Issues: [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) — blank issues are
+  disabled, and feature requests belong in Discussions, not issues
+- Handy is under a **feature freeze** (`CONTRIBUTING.md`). A new feature the community
+  has not asked for will be rejected; gather support in
+  [Discussions](https://github.com/cjpais/Handy/discussions) before opening a PR.
 
-**Command-Event Architecture:** Frontend → Backend via Tauri commands; Backend → Frontend via events.
-
-**Pipeline Processing:** Audio → VAD → Whisper/Parakeet → Text output → Clipboard/Paste
-
-**State Flow:** Zustand → Tauri Command → Rust State → Persistence (tauri-plugin-store)
-
-### Technology Stack
-
-**Core Libraries:**
-
-- `transcribe-cpp` - Local Whisper-family inference (GGML/GGUF) with GPU acceleration
-- `transcribe-rs` - ONNX speech recognition (Parakeet, Moonshine, SenseVoice, etc.)
-- `handy-recorder` - Microphone capture: device selection, resampling to 16 kHz, failure detection
-- `transcribe-cpp` (Silero VAD v6, CPU-only, in-process) / `earshot` - Voice Activity Detection
-- `rdev` - Global keyboard shortcuts
-- `rodio` - Audio playback for feedback sounds
-
-### Application Flow
-
-1. **Initialization:** App starts minimized to tray, loads settings, initializes managers
-2. **Model Setup:** First-run downloads preferred Whisper model (Small/Medium/Turbo/Large)
-3. **Recording:** Global shortcut triggers audio recording with VAD filtering
-4. **Processing:** Audio sent to Whisper model for transcription
-5. **Output:** Text pasted to active application via system clipboard
-
-### Settings System
-
-Settings are stored using Tauri's store plugin with reactive updates:
-
-- Keyboard shortcuts (configurable, supports push-to-talk)
-- Audio devices (microphone/output selection)
-- Model preferences (Small/Medium/Turbo/Large Whisper variants)
-- Audio feedback and translation options
-
-### Single Instance Architecture
-
-The app enforces single instance behavior — launching when already running brings the settings window to front rather than creating a new process. Remote control flags (`--toggle-transcription`, etc.) work by launching a second instance that sends args to the running instance via `tauri_plugin_single_instance`, then exits.
-
-## Internationalization (i18n)
-
-All user-facing strings must use i18next translations. ESLint enforces this (no hardcoded strings in JSX).
-
-**Adding new text:**
-
-1. Add key to `src/i18n/locales/en/translation.json`
-2. Use in component: `const { t } = useTranslation(); t('key.path')`
-
-**File structure:**
-
-```
-src/i18n/
-├── index.ts           # i18n setup
-├── languages.ts       # Language metadata
-└── locales/
-    ├── en/translation.json  # English (source)
-    ├── de/, es/, fr/, ja/, ru/, zh/, ...
-    └── ...
-```
-
-For translation contribution guidelines, see [CONTRIBUTING_TRANSLATIONS.md](CONTRIBUTING_TRANSLATIONS.md).
-
-## Code Style
-
-**Rust:**
-
-- Run `cargo fmt` and `cargo clippy` before committing
-- Handle errors explicitly (avoid unwrap in production)
-- Use descriptive names, add doc comments for public APIs
-
-**TypeScript/React:**
-
-- Strict TypeScript, avoid `any` types
-- Functional components with hooks
-- Tailwind CSS for styling
-- Path aliases: `@/` → `./src/`
-
-## CLI Parameters
-
-Handy supports command-line parameters on all platforms for integration with scripts, window managers, and autostart configurations.
-
-**Implementation:** `cli.rs` (definitions), `main.rs` (parsing), `lib.rs` (applying), `signal_handle.rs` (shared logic)
-
-| Flag                     | Description                                                |
-| ------------------------ | ---------------------------------------------------------- |
-| `--toggle-transcription` | Toggle recording on/off on a running instance              |
-| `--toggle-post-process`  | Toggle recording with post-processing on/off               |
-| `--cancel`               | Cancel the current operation on a running instance         |
-| `--start-hidden`         | Launch without showing the main window (tray icon visible) |
-| `--no-tray`              | Launch without system tray (closing window quits the app)  |
-| `--debug`                | Enable debug mode with verbose (Trace) logging             |
-
-**Key design decisions:**
-
-- CLI flags are runtime-only overrides — they do NOT modify persisted settings
-- Remote control flags work via `tauri_plugin_single_instance`: second instance sends args, then exits
-- `send_transcription_input()` in `signal_handle.rs` is shared between signal handlers and CLI
-
-## Debug Mode
-
-Access debug features: `Cmd+Shift+D` (macOS) or `Ctrl+Shift+D` (Windows/Linux)
-
-## Platform Notes
-
-- **macOS**: Metal acceleration, accessibility permissions required for keyboard shortcuts
-- **Windows**: Vulkan acceleration, code signing. Implicit Vulkan layers (overlays, capture hooks) are disabled for the Handy process via `VK_LOADER_LAYERS_DISABLE=~implicit~` set in `main.rs`; opt out with `HANDY_KEEP_VULKAN_IMPLICIT_LAYERS=1` or by setting `VK_LOADER_LAYERS_DISABLE` yourself
-- **Linux**: OpenBLAS + Vulkan, limited Wayland support, overlay uses GTK layer shell (disable with `HANDY_NO_GTK_LAYER_SHELL=1`)
-- **Nix/NixOS**: the Nix package sets `HANDY_DISABLE_UPDATER=1` to force-disable the self-updater at runtime without touching the persisted setting (self-update can't work against an immutable `/nix/store`)
-
-## Troubleshooting
-
-See the [Troubleshooting](README.md#troubleshooting) section in README.md.
-
-## GitHub workflow for AI coding assistants
-
-**MANDATORY. Before opening any PR, issue, or discussion in this repo: you MUST read the relevant template file and follow it strictly.** That includes sections that look "ceremonial" — checklists, AI Assistance disclosures, "Human Written Description". A generic Summary/Test-plan layout is not acceptable.
-
-- **Opening a PR:** Read [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Every section listed there is mandatory. If a section requires a human-written paragraph (e.g. "Human Written Description"), leave a clear TODO placeholder and ask the human contributor to fill it in — do not invent their voice.
-- **Opening an issue:** Read [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). Blank issues are disabled; pick the right template (`bug_report.md` for bugs). Feature requests do not belong in issues — they go to [Discussions](https://github.com/cjpais/Handy/discussions) (see `.github/ISSUE_TEMPLATE/config.yml`).
-- **Proposing a feature:** Handy is under a feature freeze. New features require community support gathered in [Discussions](https://github.com/cjpais/Handy/discussions) before any PR is opened — see the PR template's "Community Feedback" section.
-- **Translations:** Follow [CONTRIBUTING_TRANSLATIONS.md](CONTRIBUTING_TRANSLATIONS.md).
-- **Full contributor workflow:** [CONTRIBUTING.md](CONTRIBUTING.md).
-
-**Commits:** Use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`). Focus the message on _why_, not _what_.
+Commits use conventional prefixes (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`).
+Say _why_ in the message, not _what_.
