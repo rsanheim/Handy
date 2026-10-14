@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Fork-only, file-based verification of a copied Handy bundle in a stock Tart VM.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_DIR="${HANDY_TART_DIR:-$ROOT_DIR/tools/tart-verify}"
+VM="${HANDY_TART_VM:-handy-sequoia-spike}"
+IMAGE="${HANDY_TART_IMAGE:-ghcr.io/cirruslabs/macos-sequoia-xcode@sha256:d25b1ba480166790c90326c33f9add68c745f38bad443db0bf803ddb50931f72}"
+TART="${TART_BIN:-tart}"
+SHARE="$STATE_DIR/share"
+GUEST_SHARE='/Volumes/My Shared Files/handy'
+
+usage() {
+  cat <<'HELP'
+Usage: script/tart-verify COMMAND [ARGS...]
+
+  prepare APP MODEL.gguf SAMPLE.wav  Copy inputs and archive committed HEAD
+  init                              Clone the stock image; set 4 CPUs / 16 GiB
+  run                               Enable host GPU preference and mount copies
+  check                             Report guest tools and Handy devices
+  smoke                             Transcribe the sample; require Metal backend
+  exec EXECUTABLE [ARGS...]          Run a guest command with Metal shim enabled
+  stop                              Stop the VM, retaining its disk
+
+Environment: TART_BIN, HANDY_TART_DIR (absolute), HANDY_TART_VM, HANDY_TART_IMAGE.
+Use Tart 2.41.0 or newer. See docs/tart-verification.md.
+HELP
+}
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+
+case "${1:-help}" in
+  help|-h|--help) usage; exit 0 ;;
+esac
+[[ "$(uname -s)" == Darwin ]] || fail 'This workflow requires macOS.'
+[[ "$STATE_DIR" == /* ]] || fail 'HANDY_TART_DIR must be an absolute path.'
+
+# Invoke the workload directly: injection into intermediate processes can carry
+# the shim into child processes, making a supposedly unshimmed comparison false.
+guest_exec() {
+  "$TART" exec "$VM" /usr/bin/env \
+    DYLD_INSERT_LIBRARIES=/usr/local/lib/TartMetalCapabilities.dylib \
+    TART_METAL_APPLE_FAMILY_MAX=1009 "$@"
+}
+
+command="$1"
+shift
+case "$command" in
+  prepare)
+    [[ $# == 3 ]] || fail 'Expected: prepare APP MODEL.gguf SAMPLE.wav'
+    [[ -d "$1/Contents" && -f "$2" && -f "$3" ]] || fail 'Missing app, model, or WAV input.'
+    bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")"
+    [[ "$bundle_id" == com.rsanheim.handy ]] || fail "Expected fork bundle com.rsanheim.handy; got $bundle_id"
+    [[ ! -e "$SHARE" ]] || fail "Share already exists: $SHARE. Choose a fresh HANDY_TART_DIR to prepare another copy."
+    mkdir -p "$SHARE/repo" "$SHARE/models"
+    git -C "$ROOT_DIR" archive HEAD | tar -x -C "$SHARE/repo"
+    /usr/bin/ditto "$1" "$SHARE/Handy Local.app"
+    # A distinct basename makes Handy discover this as a local custom model.
+    /bin/cp -c "$2" "$SHARE/models/spike-model.gguf" 2>/dev/null || /bin/cp "$2" "$SHARE/models/spike-model.gguf"
+    /bin/cp "$3" "$SHARE/sample.wav"
+    git -C "$ROOT_DIR" rev-parse HEAD > "$STATE_DIR/source-commit.txt"
+    printf 'Prepared copies in %s\n' "$SHARE"
+    ;;
+  init)
+    "$TART" clone "$IMAGE" "$VM"
+    "$TART" set "$VM" --cpu 4 --memory 16384
+    ;;
+  run)
+    [[ -d "$SHARE/Handy Local.app" ]] || fail 'Run prepare first.'
+    /usr/bin/defaults write com.apple.gpusw.ParavirtualizedGraphics ForceUnrestrictedDeviceFeatureLevel -bool true
+    exec "$TART" run "$VM" --no-graphics --no-audio --no-clipboard "--dir=handy:$SHARE"
+    ;;
+  check)
+    "$TART" exec "$VM" /bin/bash -c '
+      set -euo pipefail
+      /usr/bin/sw_vers
+      /usr/bin/xcodebuild -version
+      /opt/homebrew/bin/brew --version
+      test -f /usr/local/lib/TartMetalCapabilities.dylib
+      test -f "/Volumes/My Shared Files/handy/repo/src-tauri/Cargo.toml"
+      /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "/Volumes/My Shared Files/handy/Handy Local.app/Contents/Info.plist"
+    '
+    guest_exec "$GUEST_SHARE/Handy Local.app/Contents/MacOS/handy" --list-devices
+    ;;
+  smoke)
+    # This home directory is in the guest. Host Handy settings are never mounted.
+    # Variables must expand in the guest shell.
+    # shellcheck disable=SC2016
+    "$TART" exec "$VM" /bin/bash -c '
+      set -euo pipefail
+      models="$HOME/Library/Application Support/com.rsanheim.handy/models"
+      target="/Volumes/My Shared Files/handy/models"
+      mkdir -p "$(dirname "$models")"
+      if [[ ! -e "$models" && ! -L "$models" ]]; then
+        ln -s "$target" "$models"
+      fi
+      [[ -L "$models" && "$(readlink "$models")" == "$target" ]] || {
+        echo "Guest model directory already exists; refusing to replace it." >&2
+        exit 1
+      }
+    '
+    mkdir -p "$STATE_DIR"
+    guest_exec "$GUEST_SHARE/Handy Local.app/Contents/MacOS/handy" \
+      --transcribe-file "$GUEST_SHARE/sample.wav" --model spike-model \
+      --device-index 0 --json > "$STATE_DIR/transcription.json" 2> "$STATE_DIR/transcription.log"
+    python3 - "$STATE_DIR/transcription.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as result_file:
+    result = json.load(result_file)
+print(json.dumps(result, indent=2))
+if not str(result.get("bound_backend", "")).startswith("MTL"):
+    sys.exit("Expected a Metal backend; inspect transcription.log and check output.")
+if not result.get("text", "").strip():
+    sys.exit("Transcription was empty.")
+PY
+    ;;
+  exec)
+    [[ $# -gt 0 ]] || fail 'Expected a guest executable.'
+    guest_exec "$@"
+    ;;
+  stop) "$TART" stop "$VM" ;;
+  *) usage >&2; exit 1 ;;
+esac
