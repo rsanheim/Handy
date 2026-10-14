@@ -6,8 +6,8 @@ workflow and should not be treated as upstream Handy documentation.
 This branch changes the experimental **Keep Mic Open Between Transcriptions**
 setting from 30 seconds to 10 minutes.
 
-It also uses the prerelease version `0.8.3-rsanheim-rc3` so local artifacts are
-easier to distinguish from the published upstream `0.8.3` release.
+Fork builds use an `-rsanheim-rc` version suffix; see `CHANGELOG-RS.md` for the
+current version and upstream base.
 
 The warm lazy-stream path also skips the fixed 100ms startup-tone delay when the
 microphone stream is already open. Cold starts keep the existing delay.
@@ -51,7 +51,7 @@ The split is applied only by the fork-local signing script. It does not modify
 upstream `src-tauri/tauri.conf.json`.
 
 Because the split lives in the script rather than the config, a bare
-`bun run tauri build` would otherwise emit a `com.pais.handy` bundle beside the
+`pnpm exec tauri build` would otherwise emit a `com.pais.handy` bundle beside the
 local one. `src-tauri/build.rs` blocks that: a macOS release build resolving to
 the upstream identifier fails with a pointer to `script/local-signing build`.
 The guard exempts debug builds (`tauri dev`), CI, and
@@ -62,19 +62,15 @@ The guard exempts debug builds (`tauri dev`), CI, and
 From the repository root:
 
 ```bash
-bun install
-mkdir -p src-tauri/resources/models
-curl -o src-tauri/resources/models/silero_vad_v4.onnx \
-  https://blob.handy.computer/silero_vad_v4.onnx
+pnpm install --frozen-lockfile
 ```
 
-If the VAD model already exists at
-`src-tauri/resources/models/silero_vad_v4.onnx`, you do not need to download it
-again.
+The Silero VAD GGUF is included in `src-tauri/resources/models/`; no separate
+VAD download is needed.
 
 ## Run Without Installing
 
-Do not use bare `bun run tauri dev` when testing Accessibility or single-instance
+Do not use bare `pnpm exec tauri dev` when testing Accessibility or single-instance
 behavior for this fork. The upstream development configuration still uses
 `com.pais.handy`, so it does not get the identifier isolation described here.
 
@@ -107,7 +103,8 @@ script/local-signing all
 builds `Handy Local.app` with identifier `com.rsanheim.handy`, and verifies both
 the identifier and resulting signature. Run it from an interactive terminal
 because macOS may prompt for permission to update certificate trust. The build
-disables updater artifacts for this local-only app.
+disables updater artifacts and clears upstream updater endpoints. Fork versions
+also lock update checks off without rewriting your saved preference.
 
 The first run creates and trusts the identity. Later runs reuse that identity,
 rebuild the app, and compare the app's signing-certificate fingerprint with the
