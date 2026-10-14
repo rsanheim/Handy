@@ -92,7 +92,9 @@ automatically. Expect first-run setup in `Handy Local`.
 
 ## Build a Local App Bundle
 
-To create a local macOS bundle for this fork, use the local signing helper:
+To create a local macOS bundle for this fork, use the local signing helper.
+Build updates in a separate worktree while Handy is running: the daily-use app
+lives inside this checkout's build output, so rebuilding here would overwrite it.
 
 ```bash
 script/local-signing all
@@ -108,8 +110,8 @@ also lock update checks off without rewriting your saved preference.
 
 The first run creates and trusts the identity. Later runs reuse that identity,
 rebuild the app, and compare the app's signing-certificate fingerprint with the
-identity in your default user Keychain. This is the normal command to run after
-changing the fork.
+identity in your default user Keychain. Run it in the build worktree after
+changing the fork, then use the install workflow below in the daily-use checkout.
 
 The individual `setup`, `trust`, `build`, and `verify` commands remain available
 for troubleshooting or running one step at a time.
@@ -136,6 +138,30 @@ overrides.
 
 This does not overwrite `/Applications/Handy.app`. The different product name
 and identifier keep the local bundle distinct even if both are running.
+
+## Install a Tested Bundle
+
+To install the tested bundle staged at `target/install/Handy Local.app`:
+
+```bash
+script/install
+```
+
+The current verified `0.9.8-rsanheim-rc1` bundle is already staged. For a future
+update, copy the verified bundle from the build worktree into that fixed path
+using `ditto`, then run `script/install` from the daily-use checkout. Staging an
+app does not change the running app. The staging directory is ignored by Git.
+
+The installer verifies the fork identity and signing certificate, stages and
+verifies a copy, quits Handy Local, replaces this checkout's bundle, and launches
+it through `script/handy`. It stops if the app does not quit. It does not rebuild
+or create backups. Settings, models, recordings, and history stay in place.
+
+To inspect the staged bundle without installing it:
+
+```bash
+script/local-signing verify 'target/install/Handy Local.app'
+```
 
 ## Accessibility Permissions For Local Builds
 

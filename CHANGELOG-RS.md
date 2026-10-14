@@ -27,12 +27,29 @@ model migration UI, and recording, paste, and history fixes.
   Rust backend's 2.11 release line.
 - Replace two upstream hardcoded download labels with existing translations
   so frontend lint passes.
+- Add `script/install` to install the verified bundle staged at
+  `target/install/Handy Local.app`. It checks the stable signing identity before
+  quitting, replaces the daily-use bundle, and relaunches through Launch
+  Services, without rebuilding or creating backups.
 
 ### Verification
 
-Build and validation are performed in an isolated worktree and target directory.
-The daily-use host bundle is not replaced or restarted. See the update PR for
-validation results and the remaining microphone/Accessibility checks.
+The signed production bundle was built in an isolated host worktree. A source
+copy also compiled inside the stock Sequoia base Tart VM with Command Line Tools,
+without full Xcode. Guest validation passed:
+
+- 276 regular Rust tests and all 16 model-dependent worker integration tests.
+- Three frontend assertion scripts and two Playwright server/HTML checks.
+- Translation and model-language consistency, lint, formatting, Clippy, frontend
+  build, and the signing helper's self-test. Clippy reports upstream warnings.
+- Metal transcription with Whisper Large V3; streaming and worker fault tests
+  with Parakeet Unified EN Q8_0.
+
+Installer replacement, relaunch, and rejection checks passed in the VM using a
+test verifier; the production signature verifier passed against the staged host
+bundle. The daily-use host app was not replaced or restarted during validation.
+Physical microphone input, Accessibility permissions, global shortcuts, and
+end-to-end paste still require a host check after installation.
 
 ## 0.9.4-rsanheim-rc1 - 2026-07-25
 

@@ -1,0 +1,52 @@
+#!/usr/bin/env ruby
+# Install an already-built fork bundle at this checkout's usual launch path.
+require "fileutils"
+require "tmpdir"
+
+ROOT = File.expand_path("..", __dir__)
+USAGE = "Usage: script/install\nInstalls target/install/Handy Local.app and relaunches the fork. No backups or rebuild."
+if ARGV == ["--help"] || ARGV == ["-h"]
+  puts USAGE
+  exit
+end
+abort USAGE unless ARGV.empty?
+abort "This installer requires macOS." unless RUBY_PLATFORM.include?("darwin")
+
+source = File.join(ROOT, "target/install/Handy Local.app")
+bundle_id = "com.rsanheim.handy"
+product = "Handy Local"
+ENV["HANDY_LOCAL_BUNDLE_ID"] = bundle_id
+ENV["HANDY_LOCAL_PRODUCT_NAME"] = product
+verify = File.join(ROOT, "script/local-signing")
+system(verify, "verify", source, exception: true)
+
+destination = File.join(ROOT, "src-tauri/target/release/bundle/macos", "#{product}.app")
+FileUtils.mkdir_p(File.dirname(destination))
+
+# Stage and verify before quitting, so a copy failure leaves the app running.
+Dir.mktmpdir(".handy-install-", File.dirname(destination)) do |stage|
+  staged_app = File.join(stage, "#{product}.app")
+  system("/usr/bin/ditto", source, staged_app, exception: true)
+  system(verify, "verify", staged_app, exception: true)
+  system("/usr/bin/osascript", "-l", "JavaScript", "-e", <<~JAVASCRIPT, exception: true)
+    ObjC.import("AppKit");
+    function run() {
+      const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("#{bundle_id}");
+      for (let i = 0; i < apps.count; i++) apps.objectAtIndex(i).terminate;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        let running = false;
+        for (let i = 0; i < apps.count; i++) {
+          if (!apps.objectAtIndex(i).isTerminated) running = true;
+        }
+        if (!running) return;
+        $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1));
+      }
+      throw new Error("Handy did not quit; installation cancelled.");
+    }
+  JAVASCRIPT
+  FileUtils.rm_r(destination) if File.exist?(destination)
+  File.rename(staged_app, destination)
+end
+
+system(File.join(ROOT, "script/handy"), exception: true)
+puts "Installed and launched #{destination}"
