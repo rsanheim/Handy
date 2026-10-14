@@ -1,117 +1,76 @@
-# AGENTS.md
+# Handy fork instructions
 
-Guidance for AI coding assistants working in rsanheim's fork of Handy.
+This is **rsanheim/Handy**. This file is committed, fork-owned guidance;
+`CLAUDE.md` is a symlink to it. Preserve both during upstream merges. Review
+upstream changes selectively with `git show origin/main:AGENTS.md`; there is no
+second copy to maintain and no automatic “ours” merge driver.
 
-This file is fork-local, and `CLAUDE.md` is a symlink to it. Upstream's version is
-preserved verbatim at [AGENTS.upstream.md](AGENTS.upstream.md) — read it for the
-architecture tour, directory map, and tech stack. Keep all three out of any PR sent
-upstream.
+## Start here
 
-## Fork layout
+- [Fork maintenance](docs/fork-maintenance.md): upstream updates, verification,
+  staging, and installation.
+- [Tart verification](docs/tart-verification.md): pinned base image, first-time VM
+  setup, Metal shim, fixtures, test coverage, and limits.
+- [Local build and signing](docs/local-build-keep-mic-open.md): bundle identity,
+  stable certificate, permissions, and microphone behavior.
+- [CHANGELOG-RS.md](CHANGELOG-RS.md): retained fork changes and patches dropped
+  when upstream supplied an equivalent.
 
-- `origin` is **upstream** (cjpais/Handy) — merge from it, never push to it. `fork` is
-  **rsanheim/Handy** — push there. `main` already tracks `fork/main`, so a bare
-  `git push` goes to the fork; upstream syncs come from `origin/main`.
-- `script/` (singular) is fork-local tooling. `scripts/` (plural) is upstream's. They
-  are different directories; do not conflate them.
-- `tools/` is gitignored local-only scratch work. Nothing there ships.
-- `AGENTS.md` and `CLAUDE.md` are **upstream-tracked paths** that the fork has replaced.
-  Every upstream merge will conflict on both; resolve by keeping the fork's version, and
-  re-sync `AGENTS.upstream.md` from `origin/main:AGENTS.md` at the same time — nothing
-  enforces that copy staying current.
-- [CHANGELOG-RS.md](CHANGELOG-RS.md) tracks fork-local versions and, more usefully,
-  which fork-local patches were **dropped** because upstream shipped an equivalent.
-  On an upstream merge, prefer upstream's implementation and delete the fork's — keep
-  a fork-local patch only when it encodes behavior upstream does not have, and cover
-  that behavior with a test so the next merge cannot silently erase it.
+## Remotes and scope
 
-## Upstream docs that are wrong for this fork
+- `origin` is **cjpais/Handy**: fetch and merge from `origin/main`.
+- `fork` is **rsanheim/Handy**: push and open PRs here. `main` tracks `fork/main`.
+- All work is for this fork unless Rob explicitly requests an upstream submission.
+  Use `gh --repo rsanheim/Handy` for PR operations. Upstream's submission policies
+  apply to upstream submissions, not routine maintenance of this personal fork.
+- `script/` is fork tooling; `scripts/` is upstream tooling. `tools/` and `target/`
+  hold ignored local artifacts, never the sole copy of instructions or code.
+- Commit completed instructions and scripts. Never discard unfamiliar local
+  changes merely because they are absent from committed history.
 
-`CRUSH.md`, `CONTRIBUTING.md`, and `AGENTS.upstream.md` are upstream's and predate the
-fork's changes. Specifically:
+## Protect the running Mac app
 
-- They tell you to `curl` the Silero VAD model. **Don't** — `src-tauri/resources/models/silero_vad_v4.onnx`
-  is committed to the repo (1.8 MB, not LFS). The download step is stale upstream
-  boilerplate.
-- `CRUSH.md` says to run `bun run tauri build` for a production build. On macOS that is
-  exactly the command the fork's identity guard rejects — see below.
+- The daily-use app may run directly from this checkout's
+  `src-tauri/target/release/bundle/macos/Handy Local.app`. Inspect the running
+  process before building. Build candidates in a separate worktree; run tests
+  inside Tart. Do not overwrite that bundle while it is running.
+- Use `Handy Local`, `com.rsanheim.handy`, and the existing **Handy Local Code
+  Signing** certificate. `script/local-signing` applies these overrides; upstream
+  `tauri.conf.json` still uses `com.pais.handy`.
+- `script/handy` verifies the signature and launches through Launch Services.
+  Preserve this behavior: direct binary launches previously confused permissions.
+- The release identity guard does not protect debug builds or builds with `CI`
+  set. Avoid bare `tauri dev`/`tauri build` for the daily-use fork.
+- `script/install` consumes `target/install/Handy Local.app`, verifies it, quits
+  the fork, replaces its usual bundle, and relaunches. It does not build or back up.
+  Only run it when installation/restart is authorized. Never reset TCC as routine
+  update work.
 
-## macOS bundle identity
+## Commands
 
-The fork builds as `Handy Local` / `com.rsanheim.handy` so it does not fight the
-released Handy over macOS permissions, application data, logs, and the single-instance
-namespace. That split is applied by `script/local-signing` via `--config`, **not** by
-`tauri.conf.json` — which still carries upstream's `com.pais.handy`.
+Use **pnpm**, never npm/npx. `mise.toml` pins pnpm and Bun; Bun is retained as the
+runtime for upstream TypeScript checks. The GGUF Silero VAD resource is tracked;
+no manual VAD download is needed.
 
-`guard_upstream_bundle_identity()` in `src-tauri/build.rs` fails any **macOS release**
-build that resolves to `com.pais.handy`. It returns early — and so does not fire — for
-non-macOS targets, any debug profile (including `tauri build --debug`, which will happily
-bundle an upstream-identity app), when the `CI` env var is set, or when
-`HANDY_ALLOW_UPSTREAM_IDENTITY=1` is set for a deliberate one.
+- `mise install` then `pnpm install --frozen-lockfile`: local dependency setup.
+- `script/test`: all automated checks in the prepared, running Tart VM, including
+  the model-dependent worker tests. It snapshots current working files and leaves
+  the VM running. First-time setup is in the Tart guide; missing setup is an error.
+- `script/local-signing all`: signed production build, **in an isolated worktree**.
+- `script/install`: install the staged, tested candidate from the daily-use checkout.
 
-If you hit that build error, you almost certainly wanted `script/local-signing build`.
+Keep fork-specific behavior only where upstream does not supply an equivalent.
+Retain the 10-minute microphone timeout and its regression test unless measurements
+justify changing it. Fork versions use an `-rsanheim-` suffix and disable upstream
+update checks without rewriting the user's saved preference.
 
-## Build setup
+User-facing strings use i18next, with English keys in
+`src/i18n/locales/en/translation.json`. CLI overrides must not persist settings;
+headless inference and worker processes must remain separate from the GUI's
+single-instance forwarding. Automated tests do not cover physical microphone,
+Accessibility, global shortcut, and paste behavior; check those after installation.
 
-```bash
-bun install
-bun run tauri dev
-```
-
-`bun run format` runs Prettier **and** `cargo fmt` — it covers both halves of the repo.
-Run it plus `bun run lint` before committing; CI enforces both, plus `format:check` and
-`check:translations`. See [BUILD.md](BUILD.md) for platform-specific setup.
-
-Upstream docs mention a `CMAKE_POLICY_VERSION_MINIMUM=3.5` prefix for macOS cmake
-errors. No current dependency appears to need it and nothing in CI sets it — treat it as
-an inherited workaround with no known trigger, not a required step.
-
-Debug features: `Cmd+Shift+D` (macOS), `Ctrl+Shift+D` elsewhere.
-
-## Behavior worth knowing before you change it
-
-**Single instance.** Launching while already running normally forwards the CLI args to
-the running app and exits, bringing the settings window forward. The remote-control flags
-(`--toggle-transcription` and friends) depend on this. The exception is headless mode —
-`--transcribe-file`, `--list-devices`, `--list-models` deliberately skip the plugin and
-run as a standalone process, since forwarding would make them a silent no-op whenever the
-app is already open. Break single-instance and you break the remote-control flags with
-it.
-
-**CLI flags are runtime-only overrides.** They never write to persisted settings. Run
-`--help` for the current list; `cli.rs` is the definition and `signal_handle.rs` holds
-`send_transcription_input()`, shared between the signal handlers and the CLI.
-
-**Linux overlay.** Uses GTK layer shell; disable with `HANDY_NO_GTK_LAYER_SHELL=1`.
-Wayland support is limited.
-
-**macOS needs accessibility permissions** for global shortcuts. A fresh local build is a
-new bundle identity, so it asks again.
-
-## i18n
-
-Every user-facing string goes through i18next. `i18next/no-literal-string` is an ESLint
-error on JSX (`eslint.config.js`), so hardcoded strings fail `bun run lint` and the
-`code-quality` CI job — note `bun run build` is `tsc && vite build` and does _not_ run
-ESLint. English is the reference locale: add keys to
-`src/i18n/locales/en/translation.json` first. Other locales follow
-[CONTRIBUTING_TRANSLATIONS.md](CONTRIBUTING_TRANSLATIONS.md).
-
-## Contributing upstream
-
-**Read the template before opening anything.** Upstream requires every section,
-including the ones that look ceremonial — "Human Written Description" (the template says
-outright that a PR may be rejected without one), "Community Feedback", and "AI
-Assistance". A generic Summary/Test-plan layout gets rejected. Where a section needs a
-human-written paragraph, leave a clear TODO and ask Rob to fill it in — do not write in
-his voice.
-
-- PRs: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)
-- Issues: [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) — blank issues are
-  disabled, and feature requests belong in Discussions, not issues
-- Handy is under a **feature freeze** (`CONTRIBUTING.md`). A new feature the community
-  has not asked for will be rejected; gather support in
-  [Discussions](https://github.com/cjpais/Handy/discussions) before opening a PR.
-
-Commits use conventional prefixes (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`).
-Say _why_ in the message, not _what_.
+Use conventional commit prefixes and explain why the change is needed. For an
+explicitly requested upstream submission, read the relevant `.github/` template
+and `CONTRIBUTING.md`, keep fork-only tooling/instructions out of that submission,
+and do not invent the human-written description.

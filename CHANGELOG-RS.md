@@ -31,6 +31,11 @@ model migration UI, and recording, paste, and history fixes.
   `target/install/Handy Local.app`. It checks the stable signing identity before
   quitting, replaces the daily-use bundle, and relaunches through Launch
   Services, without rebuilding or creating backups.
+- Restore and commit fork-owned `AGENTS.md` with its `CLAUDE.md` symlink. Keep
+  upstream instructions in Git rather than maintaining a duplicate snapshot.
+- Add `script/test` to run the complete automated suite in Tart from a fresh
+  working-tree snapshot, including real-model worker tests. Document the update,
+  VM setup, and installation workflow for a fresh agent or development Mac.
 
 ### Verification
 

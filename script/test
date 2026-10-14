@@ -1,0 +1,128 @@
+#!/usr/bin/env ruby
+# Run the fork's automated checks in a running Tart VM, including worker faults.
+require "digest"
+require "fileutils"
+require "json"
+require "open3"
+require "shellwords"
+require "tmpdir"
+
+ROOT = File.expand_path("..", __dir__)
+
+def run(*argv, **options)
+  puts "+ #{argv.shelljoin}"
+  system(*argv, **options, exception: true)
+end
+
+def capture(*argv)
+  output, status = Open3.capture2(*argv)
+  abort "#{argv.first} failed (#{status})" unless status.success?
+  output
+end
+
+if ARGV == ["--help"] || ARGV == ["-h"]
+  puts "Usage: script/test\nRuns all automated checks in the running Tart VM. See docs/tart-verification.md for one-time setup."
+  exit
+end
+abort "Usage: script/test" unless ARGV.empty? || ARGV == ["--guest"]
+abort "This workflow requires macOS." unless RUBY_PLATFORM.include?("darwin")
+$stdout.sync = true
+
+if ARGV == ["--guest"]
+  abort "Guest execution requires the Tart Metal shim." unless File.file?("/usr/local/lib/TartMetalCapabilities.dylib")
+  ENV.delete("DYLD_INSERT_LIBRARIES")
+  ENV["PATH"] = "/opt/homebrew/bin:#{ENV.fetch('HOME')}/.cargo/bin:#{ENV.fetch('PATH')}"
+  Dir.chdir(ROOT)
+  run("mise", "trust", ROOT)
+  run("mise", "install")
+  run("mise", "install", "rust@stable")
+
+  fixtures = File.join(ENV.fetch("HOME"), "handy-test-fixtures")
+  FileUtils.mkdir_p(fixtures)
+  catalog = JSON.parse(File.read("src-tauri/src/catalog/catalog.json"))
+  model = catalog.fetch("models").find { |entry| entry.fetch("slug") == "parakeet-unified-en-0.6b" }
+  abort "The integration fixture must be a streaming model." unless model && model.fetch("capabilities").fetch("streaming")
+  variant = model.fetch("files").find { |entry| entry.fetch("quant") == "Q8_0" }
+  abort "Missing Parakeet Q8_0 fixture in the catalog." unless variant
+  model_path = File.join(fixtures, variant.fetch("filename"))
+  unless File.file?(model_path) && Digest::SHA256.file(model_path).hexdigest == variant.fetch("sha256")
+    url = "https://huggingface.co/#{model.fetch('id')}/resolve/#{model.fetch('revision')}/#{variant.fetch('filename')}"
+    run("curl", "--fail", "--location", "--retry", "3", "--output", "#{model_path}.download", url)
+    abort "Integration model checksum mismatch." unless Digest::SHA256.file("#{model_path}.download").hexdigest == variant.fetch("sha256")
+    File.rename("#{model_path}.download", model_path)
+  end
+  sample = "/Volumes/My Shared Files/handy/sample.wav"
+  abort "Missing sample.wav; run tart-verify prepare first." unless File.file?(sample)
+  ENV.update(
+    "CARGO_TARGET_DIR" => File.join(ENV.fetch("HOME"), "handy-test-target"),
+    "CARGO_BUILD_JOBS" => "4", "CMAKE_BUILD_PARALLEL_LEVEL" => "4",
+    "CARGO_PROFILE_DEV_DEBUG" => "0", "CARGO_PROFILE_TEST_DEBUG" => "0", "CARGO_INCREMENTAL" => "0",
+    "HANDY_TEST_MODEL" => model_path, "HANDY_TEST_WAV" => sample
+  )
+  run("mise", "exec", "rust@stable", "--", "/bin/bash", "-c", <<~'BASH')
+    set -euo pipefail
+    rustc --version
+    pnpm --version
+    pnpm install --frozen-lockfile
+    pnpm run test:keyboard
+    pnpm exec bun src/components/settings/history/clipboard.test.ts
+    pnpm exec bun src/components/update-checker/portableInstaller.test.ts
+    pnpm run check:translations
+    pnpm run check:model-languages
+    pnpm run lint
+    pnpm run build
+    script/local-signing test
+    pnpm exec playwright install chromium
+    CI=1 pnpm run test:playwright
+    cd src-tauri
+    cargo test --locked
+    cargo build --locked --bin handy
+    export HANDY_TRANSCRIBE_WORKER_EXE="$CARGO_TARGET_DIR/debug/handy"
+    DYLD_INSERT_LIBRARIES=/usr/local/lib/TartMetalCapabilities.dylib \
+      TART_METAL_APPLE_FAMILY_MAX=1009 \
+      cargo test --locked --lib engine_supervisor -- --ignored --nocapture --test-threads=1
+    cargo clippy --locked --all-targets
+    cd ..
+    pnpm run format:check
+  BASH
+  puts "All automated checks passed, including model-dependent integration tests."
+  exit
+end
+
+local_tart = File.join(ROOT, "tools/tart-spike/tart.app/Contents/MacOS/tart")
+ENV["TART_BIN"] ||= local_tart if File.executable?(local_tart)
+state = ENV.fetch("HANDY_TART_DIR", File.join(ROOT, "tools/tart-verify"))
+abort "HANDY_TART_DIR must be absolute." unless state.start_with?("/")
+share = File.join(state, "share")
+abort "Missing prepared share at #{share}. See docs/tart-verification.md." unless File.directory?(share)
+launcher = File.join(ROOT, "script/tart-verify")
+run(launcher, "exec", "/usr/bin/true")
+
+Dir.mktmpdir("test-", share) do |input|
+  # Include working changes and new files, but never ignored models/build outputs.
+  files = capture("git", "-C", ROOT, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0").uniq
+  files.select! { |path| File.exist?(File.join(ROOT, path)) || File.symlink?(File.join(ROOT, path)) }
+  File.write("#{input}/files", files.join("\0") + "\0")
+  archive = "#{input}/source.tar"
+  run("tar", "-C", ROOT, "--null", "-T", "#{input}/files", "-cf", archive)
+  guest_archive = "/Volumes/My Shared Files/handy/#{File.basename(input)}/source.tar"
+  command = <<~BASH
+    set -euo pipefail
+    repo=$(mktemp -d "$HOME/handy-test-run.XXXXXX")
+    trap 'rm -rf "$repo"' EXIT
+    tar -xf #{guest_archive.shellescape} -C "$repo"
+    cd "$repo"
+    script/test --guest
+  BASH
+  log_path = File.join(state, "test.log")
+  puts "Testing current checkout (including uncommitted files). Log: #{log_path}"
+  File.open(log_path, "w") do |log|
+    log.puts "HEAD: #{capture('git', '-C', ROOT, 'rev-parse', 'HEAD').strip}"
+    log.puts "Source archive SHA256: #{Digest::SHA256.file(archive).hexdigest}"
+    Open3.popen2e(launcher, "exec", "/usr/bin/env", "-u", "DYLD_INSERT_LIBRARIES", "/bin/bash", "-lc", command) do |stdin, output, process|
+      stdin.close
+      output.each_line { |line| print line; log.write(line); log.flush }
+      abort "Tests failed; see #{log_path}" unless process.value.success?
+    end
+  end
+end

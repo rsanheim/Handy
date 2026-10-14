@@ -3,6 +3,10 @@
 This is a fork-only note for `rsanheim/Handy`. It documents local development
 workflow and should not be treated as upstream Handy documentation.
 
+For the complete update procedure, see [Fork maintenance](fork-maintenance.md).
+Run `script/test` for automated verification in Tart; see
+[Tart verification](tart-verification.md) for first-time setup.
+
 This branch changes the experimental **Keep Mic Open Between Transcriptions**
 setting from 30 seconds to 10 minutes.
 

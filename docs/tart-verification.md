@@ -1,5 +1,9 @@
 # Verify the fork in a Tart VM
 
+For upstream updates and installation, start with
+[Fork maintenance](fork-maintenance.md). Once the VM below is prepared and running,
+`script/test` runs the complete automated suite from the current checkout.
+
 This fork-only spike runs a **copy** of Handy in a stock Cirrus Labs Sequoia base
 VM, mounting a committed source snapshot, app bundle, model, and test audio. It
 uses Tart's guest agent: no SSH setup or guest Git clone is needed. The base
@@ -49,7 +53,6 @@ Leave `run` in its terminal. In another terminal, with the same environment:
 ```bash
 script/tart-verify check
 script/tart-verify smoke
-script/tart-verify stop
 ```
 
 `smoke` saves JSON and diagnostic logs under ignored `tools/tart-verify/` and
@@ -71,6 +74,58 @@ VM, not resetting an existing one. `stop` retains its disk and guest settings
 for reuse. Checks do not stop the VM automatically; leave it running between
 checks and use `stop` when finished. Keep the host share directory in place while
 the VM is running, even if its source worktree's branch has been merged.
+
+## Run all automated checks
+
+With the prepared VM running, from the checkout you want to test:
+
+```bash
+script/test
+```
+
+Use the same absolute `HANDY_TART_DIR`, `HANDY_TART_VM`, and `TART_BIN` as the
+launcher when testing from another worktree. If `TART_BIN` is unset, the test
+command uses `tools/tart-spike/tart.app/Contents/MacOS/tart` when present, otherwise
+`tart` from PATH. Machine-specific paths are not committed. On a fresh Mac, the
+`prepare`, `init`, and `run` steps above are required once; the test command does
+not create or stop VMs.
+
+If a fresh checkout has no built app for `prepare`, first make a signed candidate
+in an isolated worktree using the build step in the maintenance guide. That copied
+bundle supplies the launcher smoke test; `script/test` builds fresh source itself.
+
+On a Mac with an existing session, `tools/tart-verify` may be a local symlink to
+the directory already mounted by its VM. This keeps plain `script/test` usable
+without committing machine-specific paths or restarting the VM. Do not remove
+the symlink target while the VM is using it.
+
+The runner snapshots current tracked files and new non-ignored files into the
+mounted share, including uncommitted edits. Deleted files are omitted, and ignored
+builds/models/dependencies are not copied. A uniquely named archive avoids stale
+mounted-file caches. The guest extracts it onto its own disk and runs the copy of
+`script/test` from that snapshot. It does not reuse the old `prepare` source tree.
+
+The base image supplies Command Line Tools, CMake, Node, mise, and Ruby. The runner
+installs the repo-pinned Bun/pnpm and stable Rust with mise, installs dependencies
+from the pnpm lockfile, and installs Playwright Chromium. It downloads Parakeet
+Unified EN Q8_0 using the catalog's pinned revision and SHA256, caching it in the
+guest. The prepared `sample.wav` must be nonempty 16 kHz mono 16-bit PCM audio.
+The first run needs network access and several GB of guest disk space.
+
+Checks include all three frontend assertion scripts, both Playwright HTML checks,
+translation/model-language consistency, lint, frontend build, signing-script
+self-test, normal Rust tests, every ignored engine-supervisor test, Clippy, and
+formatting. Missing setup or a failed check exits nonzero; no model tests are
+silently skipped. The guest's debug worker enables fault injection, and those
+tests run serially. Metal stays enabled for these inference tests; it is removed
+from the environment of build tooling.
+
+Output is streamed and saved to `$HANDY_TART_DIR/test.log` (by default
+`tools/tart-verify/test.log`), with the checkout HEAD and source archive checksum.
+The log is replaced on each run. Temporary source copies are removed afterwards;
+Rust output remains in guest `~/handy-test-target` and models in
+`~/handy-test-fixtures` for reuse. The VM remains running. The runner does not
+modify the host app, keychain, settings, or permissions, or build a signed release.
 
 ## Metal defaults
 
@@ -129,28 +184,8 @@ and `mise install rust@stable`, the guest compiled the app and passed:
 The integration fixture was Parakeet Unified EN Q8_0, pinned to catalog revision
 `7e948f21b7bdbac698d3318db9d350f1096f3b6c`, checked against the catalog SHA256,
 with the same 16 kHz mono sample. Whisper cannot cover the streaming tests.
-The guest used Rust 1.99.0, Bun 1.3.13, and pnpm 11.10.0. Its Playwright config's
-server command was changed from `bunx vite dev` to `pnpm exec vite dev` locally.
-
-To repeat the Rust tests in the prepared guest, run these commands through
-`exec /usr/bin/env -u DYLD_INSERT_LIBRARIES /bin/bash -lc '...'`:
-
-```bash
-export PATH=/opt/homebrew/bin:$HOME/.cargo/bin:$PATH
-export CARGO_BUILD_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4
-export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
-cd "$HOME/handy-test/src-tauri"
-mise exec rust@stable -- cargo test --locked
-mise exec rust@stable -- cargo build --locked --bin handy
-
-export HANDY_TRANSCRIBE_WORKER_EXE="$PWD/target/debug/handy"
-export HANDY_TEST_MODEL="$HOME/handy-test-fixtures/parakeet-unified-en-Q8_0.gguf"
-export HANDY_TEST_WAV="$HOME/handy-test-fixtures/sample.wav"
-DYLD_INSERT_LIBRARIES=/usr/local/lib/TartMetalCapabilities.dylib \
-  TART_METAL_APPLE_FAMILY_MAX=1009 \
-  mise exec rust@stable -- cargo test --locked --lib engine_supervisor -- \
-  --ignored --nocapture --test-threads=1
-```
+The guest used Rust 1.99.0, Bun 1.3.13, and pnpm 11.10.0. The fork's Playwright
+server command now uses `pnpm exec vite dev`. Repeat the suite with `script/test`.
 
 The debug worker is required because fault injection is compiled out of release
 builds. Run those tests serially because they change shared fault settings.
