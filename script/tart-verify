@@ -3,8 +3,6 @@
 require "fileutils"
 require "json"
 require "open3"
-require "shellwords"
-require "tmpdir"
 
 ROOT = File.expand_path("..", __dir__)
 STATE = ENV.fetch("HANDY_TART_DIR", File.join(ROOT, "tools/tart-verify"))
@@ -31,12 +29,12 @@ USAGE = <<~TEXT
 TEXT
 
 def run(*argv, **options)
-  abort "Command failed: #{argv.shelljoin}" unless system(*argv, **options)
+  system(*argv, **options, exception: true)
 end
 
 def capture(*argv)
   output, status = Open3.capture2(*argv)
-  abort "Command failed: #{argv.shelljoin}" unless status.success?
+  abort "#{argv.first} failed (#{status})" unless status.success?
   output.strip
 end
 
@@ -51,10 +49,8 @@ if %w[help -h --help].include?(command)
   puts USAGE
   exit
 end
-expected = { "prepare" => 3, "init" => 0, "run" => 0, "check" => 0, "smoke" => 0, "stop" => 0 }
-abort USAGE unless expected.key?(command) || command == "exec"
-abort "Unexpected arguments.\n#{USAGE}" if expected.key?(command) && ARGV.length != expected[command]
-abort "Expected a guest executable." if command == "exec" && ARGV.empty?
+expected = { "prepare" => 3, "init" => 0, "run" => 0, "check" => 0, "smoke" => 0, "stop" => 0, "exec" => (1..) }
+abort USAGE unless expected.fetch(command, -1) === ARGV.length
 abort "This workflow requires macOS." unless RUBY_PLATFORM.include?("darwin")
 abort "HANDY_TART_DIR must be an absolute path." unless STATE.start_with?("/")
 
@@ -66,11 +62,8 @@ when "prepare"
   abort "Expected fork bundle com.rsanheim.handy; got #{bundle_id}" unless bundle_id == "com.rsanheim.handy"
   abort "Share already exists: #{SHARE}. Choose a fresh HANDY_TART_DIR." if File.exist?(SHARE) || File.symlink?(SHARE)
   FileUtils.mkdir_p(["#{SHARE}/repo", "#{SHARE}/models"])
-  Dir.mktmpdir("handy-source-") do |directory|
-    archive = File.join(directory, "source.tar")
-    run("git", "-C", ROOT, "archive", "HEAD", "--output=#{archive}")
-    run("tar", "-xf", archive, "-C", "#{SHARE}/repo")
-  end
+  statuses = Open3.pipeline(["git", "-C", ROOT, "archive", "HEAD"], ["tar", "-x", "-C", "#{SHARE}/repo"])
+  abort "Source archive failed" unless statuses.all?(&:success?)
   run("/usr/bin/ditto", app, "#{SHARE}/Handy Local.app")
   # The custom basename makes Handy discover this as a local model.
   destination = "#{SHARE}/models/spike-model.gguf"
@@ -111,14 +104,13 @@ when "smoke"
       exit 1
     }
   BASH
-  FileUtils.mkdir_p(STATE)
   result_path = "#{STATE}/transcription.json"
   guest(GUEST_APP, "--transcribe-file", "#{GUEST_SHARE}/sample.wav", "--model", "spike-model",
         "--device-index", "0", "--json", out: result_path, err: "#{STATE}/transcription.log")
-  result = JSON.parse(File.read(result_path))
+  result = JSON.load_file(result_path)
   puts JSON.pretty_generate(result)
-  abort "Expected a Metal backend; inspect transcription.log and check output." unless result.fetch("bound_backend", "").to_s.start_with?("MTL")
-  abort "Transcription was empty." if result.fetch("text", "").to_s.strip.empty?
+  abort "Expected a Metal backend; inspect transcription.log and check output." unless result.fetch("bound_backend").start_with?("MTL")
+  abort "Transcription was empty." if result.fetch("text").strip.empty?
 when "exec"
   guest(*ARGV)
 when "stop"
