@@ -146,7 +146,7 @@ tauri_config() {
   escaped_identity="$(json_escape "$IDENTITY")"
   escaped_bundle_id="$(json_escape "$BUNDLE_ID")"
   escaped_product_name="$(json_escape "$PRODUCT_NAME")"
-  printf '{"productName":"%s","identifier":"%s","bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"%s"}}}' \
+  printf '{"productName":"%s","identifier":"%s","bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"%s"}},"plugins":{"updater":{"endpoints":[]}}}' \
     "$escaped_product_name" "$escaped_bundle_id" "$escaped_identity"
 }
 
@@ -160,7 +160,7 @@ shell_quote() {
 print_build_command() {
   local config
   config="$(tauri_config)"
-  printf 'bun run tauri -- build --bundles app --config %s\n' "$(shell_quote "$config")"
+  printf 'pnpm exec tauri build --bundles app --config %s\n' "$(shell_quote "$config")"
 }
 
 identity_record_exists() {
@@ -340,7 +340,7 @@ require_valid_identity() {
 build_signed_app() {
   validate_local_app_config
   require_valid_identity
-  require_command bun
+  require_command pnpm
 
   local config
   config="$(tauri_config)"
@@ -353,7 +353,7 @@ build_signed_app() {
   print_build_command
 
   cd "$ROOT_DIR"
-  bun run tauri -- build --bundles app --config "$config"
+  pnpm exec tauri build --bundles app --config "$config"
 }
 
 build_app() {
@@ -448,11 +448,12 @@ self_test() {
   assert_contains "$config_output" "\"productName\":\"$PRODUCT_NAME\""
   assert_contains "$config_output" "\"identifier\":\"$BUNDLE_ID\""
   assert_contains "$config_output" '"createUpdaterArtifacts":false'
+  assert_contains "$config_output" '"endpoints":[]'
   assert_contains "$config_output" '"macOS"'
   assert_contains "$config_output" '"signingIdentity":"Handy Test Signing Identity"'
 
   command_output="$(print_build_command)"
-  assert_contains "$command_output" 'bun run tauri -- build --bundles app --config'
+  assert_contains "$command_output" 'pnpm exec tauri build --bundles app --config'
   assert_contains "$command_output" "\"identifier\":\"$BUNDLE_ID\""
   assert_contains "$command_output" '"signingIdentity":"Handy Test Signing Identity"'
 

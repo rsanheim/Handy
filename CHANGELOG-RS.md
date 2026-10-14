@@ -6,6 +6,34 @@ This file tracks fork-local versions, experiments, and release-candidate builds 
 they can be compared against upstream Handy releases later. The upstream project
 changelog remains the source of truth for official releases.
 
+## 0.9.8-rsanheim-rc1 - 2026-10-14
+
+Base: upstream `main` at `cfcb650` (past the `v0.9.8` release tag).
+
+Merge 139 upstream commits since the July sync, including the isolated
+transcription worker, transcribe-cpp 0.4.0, handy-recorder, GGUF Silero VAD,
+model migration UI, and recording, paste, and history fixes.
+
+### Fork-Local Behavior
+
+- Retain the 10-minute microphone idle timeout and its guard test alongside
+  upstream's new recorder tests; retain the matching English UI copy.
+- Preserve `Handy Local`, `com.rsanheim.handy`, the stable local signing
+  workflow, Launch Services launcher, and upstream-identity build guard.
+- Force update checks off for fork versions without changing saved settings,
+  and clear upstream update endpoints in local signed builds.
+- Use pinned pnpm 11.10.0 for local installation/builds, with a pnpm lockfile
+  and explicitly approved esbuild install script. Keep Tauri JavaScript on the
+  Rust backend's 2.11 release line.
+- Replace two upstream hardcoded download labels with existing translations
+  so frontend lint passes.
+
+### Verification
+
+Build and validation are performed in an isolated worktree and target directory.
+The daily-use host bundle is not replaced or restarted. See the update PR for
+validation results and the remaining microphone/Accessibility checks.
+
 ## 0.9.4-rsanheim-rc1 - 2026-07-25
 
 Base: upstream `main` at `6cad594` (past the `v0.9.4` release tag).
