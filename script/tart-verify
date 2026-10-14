@@ -1,0 +1,121 @@
+#!/usr/bin/env ruby
+# Fork-only verification of a copied Handy bundle in a stock Tart VM.
+require "fileutils"
+require "json"
+require "open3"
+
+ROOT = File.expand_path("..", __dir__)
+STATE = ENV.fetch("HANDY_TART_DIR", File.join(ROOT, "tools/tart-verify"))
+VM = ENV.fetch("HANDY_TART_VM", "handy-sequoia-spike")
+IMAGE = "ghcr.io/cirruslabs/macos-sequoia-base@sha256:eee659985b01e4df2a6c0754bd8d25e54969933c43fdcd4edef8bea337b3d354"
+TART = ENV.fetch("TART_BIN", "tart")
+SHARE = File.join(STATE, "share")
+GUEST_SHARE = "/Volumes/My Shared Files/handy"
+GUEST_APP = "#{GUEST_SHARE}/Handy Local.app/Contents/MacOS/handy"
+
+USAGE = <<~TEXT
+  Usage: script/tart-verify COMMAND [ARGS...]
+
+    prepare APP MODEL.gguf SAMPLE.wav  Copy inputs and archive committed HEAD
+    init                              Clone the pinned image; set 4 CPUs / 16 GiB
+    run                               Enable host GPU preference and mount copies
+    check                             Report guest tools and Handy devices
+    smoke                             Transcribe the sample; require Metal backend
+    exec EXECUTABLE [ARGS...]          Run a guest command with Metal shim enabled
+    stop                              Stop the VM, retaining its disk
+
+  Environment: TART_BIN, HANDY_TART_DIR (absolute), HANDY_TART_VM.
+  Use Tart 2.41.0 or newer. See docs/tart-verification.md.
+TEXT
+
+def run(*argv, **options)
+  system(*argv, **options, exception: true)
+end
+
+def capture(*argv)
+  output, status = Open3.capture2(*argv)
+  abort "#{argv.first} failed (#{status})" unless status.success?
+  output.strip
+end
+
+def guest(*argv, **options)
+  run(TART, "exec", VM, "/usr/bin/env",
+      "DYLD_INSERT_LIBRARIES=/usr/local/lib/TartMetalCapabilities.dylib",
+      "TART_METAL_APPLE_FAMILY_MAX=1009", *argv, **options)
+end
+
+command = ARGV.shift || "help"
+if %w[help -h --help].include?(command)
+  puts USAGE
+  exit
+end
+expected = { "prepare" => 3, "init" => 0, "run" => 0, "check" => 0, "smoke" => 0, "stop" => 0, "exec" => (1..) }
+abort USAGE unless expected.fetch(command, -1) === ARGV.length
+abort "This workflow requires macOS." unless RUBY_PLATFORM.include?("darwin")
+abort "HANDY_TART_DIR must be an absolute path." unless STATE.start_with?("/")
+
+case command
+when "prepare"
+  app, model, sample = ARGV.map { |path| File.expand_path(path) }
+  abort "Missing app, model, or WAV input." unless File.directory?("#{app}/Contents") && File.file?(model) && File.file?(sample)
+  bundle_id = capture("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", "#{app}/Contents/Info.plist")
+  abort "Expected fork bundle com.rsanheim.handy; got #{bundle_id}" unless bundle_id == "com.rsanheim.handy"
+  abort "Share already exists: #{SHARE}. Choose a fresh HANDY_TART_DIR." if File.exist?(SHARE) || File.symlink?(SHARE)
+  FileUtils.mkdir_p(["#{SHARE}/repo", "#{SHARE}/models"])
+  statuses = Open3.pipeline(["git", "-C", ROOT, "archive", "HEAD"], ["tar", "-x", "-C", "#{SHARE}/repo"])
+  abort "Source archive failed" unless statuses.all?(&:success?)
+  run("/usr/bin/ditto", app, "#{SHARE}/Handy Local.app")
+  # The custom basename makes Handy discover this as a local model.
+  destination = "#{SHARE}/models/spike-model.gguf"
+  system("/bin/cp", "-c", model, destination, err: File::NULL) || FileUtils.cp(model, destination)
+  FileUtils.cp(sample, "#{SHARE}/sample.wav")
+  File.write("#{STATE}/source-commit.txt", "#{capture('git', '-C', ROOT, 'rev-parse', 'HEAD')}\n")
+  puts "Prepared copies in #{SHARE}"
+when "init"
+  run(TART, "clone", IMAGE, VM)
+  run(TART, "set", VM, "--cpu", "4", "--memory", "16384")
+when "run"
+  abort "Run prepare first." unless File.directory?("#{SHARE}/Handy Local.app")
+  run("/usr/bin/defaults", "write", "com.apple.gpusw.ParavirtualizedGraphics", "ForceUnrestrictedDeviceFeatureLevel", "-bool", "true")
+  exec(TART, "run", VM, "--no-graphics", "--no-audio", "--no-clipboard", "--dir=handy:#{SHARE}")
+when "check"
+  run(TART, "exec", VM, "/bin/bash", "-c", <<~'BASH')
+    set -euo pipefail
+    /usr/bin/sw_vers
+    /opt/homebrew/bin/brew --version
+    test -f /usr/local/lib/TartMetalCapabilities.dylib
+    test -f "/Volumes/My Shared Files/handy/repo/src-tauri/Cargo.toml"
+    /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "/Volumes/My Shared Files/handy/Handy Local.app/Contents/Info.plist"
+  BASH
+  guest(GUEST_APP, "--list-devices")
+when "smoke"
+  # HOME expands only in the guest; host settings are never mounted.
+  run(TART, "exec", VM, "/bin/bash", "-c", <<~'BASH')
+    set -euo pipefail
+    models="$HOME/Library/Application Support/com.rsanheim.handy/models"
+    target="/Volumes/My Shared Files/handy/models"
+    mkdir -p "$(dirname "$models")"
+    # Device discovery may have created an empty directory on first launch.
+    if [[ -d "$models" && ! -L "$models" ]]; then
+      rmdir "$models"
+    fi
+    if [[ ! -e "$models" && ! -L "$models" ]]; then
+      ln -s "$target" "$models"
+    fi
+    [[ -L "$models" && "$(readlink "$models")" == "$target" ]] || {
+      echo "Guest model directory already exists; refusing to replace it." >&2
+      exit 1
+    }
+  BASH
+  result_path = "#{STATE}/transcription.json"
+  guest(GUEST_APP, "--transcribe-file", "#{GUEST_SHARE}/sample.wav", "--model", "spike-model",
+        "--device-index", "0", "--json", out: result_path, err: "#{STATE}/transcription.log")
+  result = JSON.load_file(result_path)
+  puts JSON.pretty_generate(result)
+  abort "Expected a Metal backend; inspect transcription.log and check output." unless result.fetch("bound_backend").start_with?("MTL")
+  abort "Transcription was empty." if result.fetch("text").strip.empty?
+when "exec"
+  guest(*ARGV)
+when "stop"
+  run(TART, "stop", VM)
+end
