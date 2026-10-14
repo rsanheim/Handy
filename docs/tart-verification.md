@@ -7,7 +7,8 @@ build, install, launch, stop, or re-sign the host Handy app.
 
 ## Requirements
 
-- Apple Silicon Mac with Tart **2.41.0** or newer and host Python 3.
+- Apple Silicon Mac with Tart **2.41.0** or newer and Ruby (the script uses only
+  its standard library).
 - An existing `com.rsanheim.handy` app bundle with the fork's headless CLI.
 - A local GGUF model and a **16 kHz, mono, 16-bit PCM WAV** sample.
 - Space for the stock image (approximately 89 GB allocated in the initial spike;
@@ -61,10 +62,10 @@ from another checkout; the source snapshot always comes from the checkout
 containing this script. Build future candidates in a separate worktree and target
 directory, since the running host app currently lives inside its build output.
 
-`HANDY_TART_VM` overrides the VM name. `HANDY_TART_IMAGE` overrides the stock image;
-the default pins the exact digest tested in the spike rather than tracking
-`latest`. `init` is for creating a new VM, not resetting an existing one. `stop`
-retains its disk and guest settings for reuse.
+`HANDY_TART_VM` overrides the VM name. The stock image pins the exact digest
+tested in the spike rather than tracking `latest`. `init` is for creating a new
+VM, not resetting an existing one. `stop` retains its disk and guest settings
+for reuse.
 
 ## Metal defaults
 
@@ -80,9 +81,8 @@ host preference alone does not inject it. `exec`, `check`'s Handy invocation, an
 guest workload. Use `script/tart-verify exec EXECUTABLE ...` for other workloads.
 These defaults apply to this launcher, not arbitrary GUI launches inside the VM.
 
-For an unshimmed comparison, use plain `tart exec`, without the wrapper; injection
-into an intermediate process can affect its children. To restore an originally
-absent host preference after the spike, stop the VM and run:
+To restore an originally absent host preference after the spike, stop the VM
+and run:
 
 ```bash
 defaults delete com.apple.gpusw.ParavirtualizedGraphics ForceUnrestrictedDeviceFeatureLevel
@@ -94,7 +94,7 @@ The October 14, 2026 spike used
 `ghcr.io/cirruslabs/macos-sequoia-xcode:latest`, resolved to the digest pinned in
 the script: guest macOS **15.7.7**, Xcode **16.4**, Homebrew **6.0.22**, on a host
 running **15.8.1**. With the shim, the GPU advertised Apple family 1009 and 64 KiB
-threadgroup memory (without it: family unsupported and 32 KiB).
+threadgroup memory.
 
 The unchanged copied Handy bundle transcribed an 8.27-second synthetic sample
 using Whisper Large V3 Q5_K_M on `MTL0` in 2.05 seconds, plus 1.17 seconds to load.
