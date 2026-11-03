@@ -100,7 +100,15 @@ script/install
 ```
 
 The installer makes no backups. It keeps settings, models, history, and recordings
-in place. After installation, check a short dictation, paste, and another dictation
+in place.
+
+The installer also makes Handy Local the only Handy that starts at login. It quits
+upstream Handy (`com.pais.handy`) if running, turns off upstream's autostart setting,
+deletes `~/Library/LaunchAgents/Handy.plist`, and turns on Handy Local's autostart.
+Upstream rewrites that plist every time it launches with its autostart setting on,
+so a leftover `Handy.plist` is a bug, never an acceptable state. On launch, Handy
+Local registers itself as a login item; the installer fails if the app logs that
+macOS refused it. After installation, check a short dictation, paste, and another dictation
 within the warm microphone window. Do not reset permissions unless diagnosing an
 actual permissions failure.
 

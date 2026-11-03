@@ -42,9 +42,12 @@ second copy to maintain and no automatic “ours” merge driver.
 - The release identity guard does not protect debug builds or builds with `CI`
   set. Avoid bare `tauri dev`/`tauri build` for the daily-use fork.
 - `script/install` consumes `target/install/Handy Local.app`, verifies it, quits
-  the fork, replaces its usual bundle, and relaunches. It does not build or back up.
+  the fork and upstream Handy, replaces its usual bundle, and relaunches. It does not build or back up.
   Only run it when installation/restart is authorized. Never reset TCC as routine
   update work.
+- Handy Local owns launch at login. `script/install` enforces this; upstream
+  `/Applications/Handy.app` must not autostart, and `~/Library/LaunchAgents/Handy.plist`
+  is a bug even while Handy Local is running.
 
 ## Commands
 

@@ -31,6 +31,10 @@ model migration UI, and recording, paste, and history fixes.
   `target/install/Handy Local.app`. It checks the stable signing identity before
   quitting, replaces the daily-use bundle, and relaunches through Launch
   Services, without rebuilding or creating backups.
+- `script/install` makes Handy Local the only Handy that starts at login: it
+  turns off upstream Handy's autostart setting, removes the `Handy.plist` launch
+  agent that upstream rewrites on every launch, turns on Handy Local's
+  autostart, and fails if macOS refuses the login item.
 - Restore and commit fork-owned `AGENTS.md` with its `CLAUDE.md` symlink. Keep
   upstream instructions in Git rather than maintaining a duplicate snapshot.
 - Add `script/test` to run the complete automated suite in Tart from a fresh
